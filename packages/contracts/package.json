@@ -1,0 +1,9 @@
+{
+  "name": "@hpos/contracts",
+  "version": "1.0.0",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "zom": "^3.0.0"
+  }
+}
