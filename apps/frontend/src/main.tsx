@@ -6,6 +6,8 @@ import type {
   PipelineStatus,
   Prospect,
   Task,
+  Unit,
+  UnitStatus,
 } from '@hpos/contracts';
 import './styles.css';
 
@@ -23,7 +25,8 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 const fetchProspects = () => apiFetch<Prospect[]>('/prospects');
-const fetchTasks = () => apiFetch<Task[]>('/tasks');
+const fetchTasks    = () => apiFetch<Task[]>('/tasks');
+const fetchUnits    = () => apiFetch<Unit[]>('/units');
 
 type ProspectDetail = {
   prospect: Prospect;
@@ -39,6 +42,22 @@ const patchProspectStatus = (id: string, status: PipelineStatus) =>
     method: 'PATCH',
     body: JSON.stringify({ status }),
   });
+
+type UpdateProspectPayload = Partial<{
+  name: string;
+  contact: { email: string; phone: string };
+  assignee: string;
+  assignedUnitId: string | null;
+}>;
+
+const patchProspect = (id: string, payload: UpdateProspectPayload) =>
+  apiFetch<Prospect>(`/prospects/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+
+const deleteProspect = (id: string) =>
+  apiFetch<void>(`/prospects/${id}`, { method: 'DELETE' });
 
 const patchTaskState = (id: string, state: Task['state']) =>
   apiFetch<Task>(`/tasks/${id}/state`, {
@@ -58,6 +77,15 @@ const postProspect = (payload: CreateProspectPayload) =>
     method: 'POST',
     body: JSON.stringify(payload),
   });
+
+const postUnit = (payload: { name: string; status: UnitStatus }) =>
+  apiFetch<Unit>('/units', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+const deleteUnit = (id: string) =>
+  apiFetch<void>(`/units/${id}`, { method: 'DELETE' });
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -267,14 +295,312 @@ function ProspectDetailPanel({
   );
 }
 
+const UNIT_STATUS_COLORS: Record<UnitStatus, string> = {
+  available: 'bg-teal-100 text-teal-700',
+  held:      'bg-amber-100 text-amber-700',
+  leased:    'bg-zinc-100 text-zinc-500',
+};
+
+// ─── Units Panel ─────────────────────────────────────────────────────────────
+
+function UnitsPanel({
+  units,
+  loading,
+  onUnitsChanged,
+}: {
+  units: Unit[];
+  loading: boolean;
+  onUnitsChanged: () => void;
+}) {
+  const [showForm, setShowForm] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const handleCreate = async () => {
+    setFormError(null);
+    if (!newName.trim()) { setFormError('Name is required.'); return; }
+    setSubmitting(true);
+    try {
+      await postUnit({ name: newName.trim(), status: 'available' });
+      setNewName('');
+      setShowForm(false);
+      onUnitsChanged();
+    } catch {
+      setFormError('Failed to create unit.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    setDeletingId(id);
+    try {
+      await deleteUnit(id);
+      onUnitsChanged();
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  return (
+    <div className="rounded-md border border-zinc-200 bg-white">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
+        <h2 className="text-lg font-semibold">Units</h2>
+        <div className="flex items-center gap-3">
+          {loading && <Spinner />}
+          <button
+            onClick={() => { setShowForm((v) => !v); setFormError(null); }}
+            className="inline-flex h-8 items-center gap-1 rounded-md bg-teal-600 px-3 text-sm font-medium text-white hover:bg-teal-700"
+          >
+            {showForm ? '✕ Cancel' : '+ Add'}
+          </button>
+        </div>
+      </div>
+
+      {units.length === 0 && !loading ? (
+        <EmptyState message="No units yet" />
+      ) : (
+        <ul className="divide-y divide-zinc-100">
+          {units.map((unit) => (
+            <li key={unit.id} className="flex items-center gap-3 px-4 py-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-zinc-800">{unit.name}</p>
+              </div>
+              <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${UNIT_STATUS_COLORS[unit.status]}`}>
+                {unit.status}
+              </span>
+              <button
+                onClick={() => void handleDelete(unit.id)}
+                disabled={deletingId === unit.id}
+                className="text-xs text-zinc-400 hover:text-red-500 disabled:opacity-40"
+                title="Delete unit"
+              >
+                {deletingId === unit.id ? <Spinner /> : '✕'}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {showForm && (
+        <div className="border-t border-zinc-200 bg-zinc-50 px-4 py-4">
+          {formError && (
+            <p className="mb-2 text-xs text-red-600">{formError}</p>
+          )}
+          <div className="flex gap-2">
+            <input
+              className="h-9 flex-1 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+              placeholder="Unit 101"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleCreate(); }}
+            />
+            <button
+              onClick={() => void handleCreate()}
+              disabled={submitting}
+              className="inline-flex h-9 items-center gap-1 rounded-md bg-teal-600 px-3 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+            >
+              {submitting ? <Spinner /> : 'Add'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Edit Prospect Form ───────────────────────────────────────────────────────
+
+function EditProspectForm({
+  prospect,
+  units,
+  onSaved,
+  onDeleted,
+  onCancel,
+}: {
+  prospect: Prospect;
+  units: Unit[];
+  onSaved: (updated: Prospect) => void;
+  onDeleted: () => void;
+  onCancel: () => void;
+}) {
+  const [fields, setFields] = useState({
+    name:           prospect.name,
+    email:          prospect.contact.email,
+    phone:          prospect.contact.phone,
+    assignee:       prospect.assignee,
+    assignedUnitId: prospect.assignedUnitId ?? '',
+  });
+  const [submitting, setSubmitting]   = useState(false);
+  const [confirming, setConfirming]   = useState(false);
+  const [deleting, setDeleting]       = useState(false);
+  const [formError, setFormError]     = useState<string | null>(null);
+
+  const set = (key: keyof typeof fields) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+      setFields((prev) => ({ ...prev, [key]: e.target.value }));
+
+  const handleSave = async () => {
+    setFormError(null);
+    if (fields.name.trim().length < 2) { setFormError('Name must be at least 2 characters.'); return; }
+    if (!fields.email.includes('@'))   { setFormError('Enter a valid email address.'); return; }
+    if (fields.phone.replace(/\D/g, '').length < 10) { setFormError('Phone must be at least 10 digits.'); return; }
+    if (!fields.assignee.trim())       { setFormError('Assignee is required.'); return; }
+
+    setSubmitting(true);
+    try {
+      const updated = await patchProspect(prospect.id, {
+        name:     fields.name.trim(),
+        contact:  { email: fields.email.trim(), phone: fields.phone.trim() },
+        assignee: fields.assignee.trim(),
+        assignedUnitId: fields.assignedUnitId || null,
+      });
+      onSaved(updated);
+    } catch {
+      setFormError('Failed to save changes.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    try {
+      await deleteProspect(prospect.id);
+      onDeleted();
+    } catch {
+      setFormError('Failed to delete prospect.');
+      setDeleting(false);
+      setConfirming(false);
+    }
+  };
+
+  const availableUnits = units.filter(
+    (u) => u.status === 'available' || u.id === prospect.assignedUnitId
+  );
+
+  return (
+    <div className="flex flex-col gap-4">
+      {formError && (
+        <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-600 ring-1 ring-red-200">
+          {formError}
+        </p>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-zinc-500">Full name</label>
+          <input
+            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            value={fields.name}
+            onChange={set('name')}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-zinc-500">Assignee</label>
+          <input
+            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            value={fields.assignee}
+            onChange={set('assignee')}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-zinc-500">Email</label>
+          <input
+            type="email"
+            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            value={fields.email}
+            onChange={set('email')}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-zinc-500">Phone</label>
+          <input
+            type="tel"
+            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            value={fields.phone}
+            onChange={set('phone')}
+          />
+        </div>
+        <div className="flex flex-col gap-1 sm:col-span-2">
+          <label className="text-xs font-medium text-zinc-500">Assigned unit</label>
+          <select
+            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            value={fields.assignedUnitId}
+            onChange={set('assignedUnitId')}
+          >
+            <option value="">— None —</option>
+            {availableUnits.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name} ({u.status})
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => void handleSave()}
+            disabled={submitting}
+            className="inline-flex h-9 items-center gap-2 rounded-md bg-teal-600 px-4 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+          >
+            {submitting && <Spinner />}
+            {submitting ? 'Saving…' : 'Save changes'}
+          </button>
+          <button
+            onClick={onCancel}
+            disabled={submitting}
+            className="text-sm text-zinc-500 hover:text-zinc-700"
+          >
+            Cancel
+          </button>
+        </div>
+
+        {/* Delete with inline confirm */}
+        {!confirming ? (
+          <button
+            onClick={() => setConfirming(true)}
+            className="text-xs text-red-400 hover:text-red-600"
+          >
+            Delete prospect
+          </button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-zinc-500">Are you sure?</span>
+            <button
+              onClick={() => void handleDelete()}
+              disabled={deleting}
+              className="inline-flex items-center gap-1 text-xs font-medium text-red-600 hover:underline disabled:opacity-50"
+            >
+              {deleting ? <Spinner /> : 'Yes, delete'}
+            </button>
+            <button
+              onClick={() => setConfirming(false)}
+              className="text-xs text-zinc-400 hover:text-zinc-600"
+            >
+              No
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Create Prospect Form ────────────────────────────────────────────────────
 
-const EMPTY_FORM = { name: '', email: '', phone: '', assignee: '' };
+const EMPTY_FORM = { name: '', email: '', phone: '', assignee: '', assignedUnitId: '' };
 
 function CreateProspectForm({
+  units,
   onCreated,
   onCancel,
 }: {
+  units: Unit[];
   onCreated: (prospect: Prospect) => void;
   onCancel: () => void;
 }) {
@@ -283,7 +609,7 @@ function CreateProspectForm({
   const [formError, setFormError] = useState<string | null>(null);
 
   const set = (key: keyof typeof EMPTY_FORM) =>
-    (e: React.ChangeEvent<HTMLInputElement>) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
       setFields((prev) => ({ ...prev, [key]: e.target.value }));
 
   const handleSubmit = async () => {
@@ -311,6 +637,7 @@ function CreateProspectForm({
         name: fields.name.trim(),
         contact: { email: fields.email.trim(), phone: fields.phone.trim() },
         assignee: fields.assignee.trim(),
+        assignedUnitId: fields.assignedUnitId || null,
       });
       onCreated(prospect);
       setFields(EMPTY_FORM);
@@ -334,7 +661,7 @@ function CreateProspectForm({
           <label className="text-xs font-medium text-zinc-500">Full name</label>
           <input
             className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
-            placeholder="First Last"
+            placeholder="Jamie Rivera"
             value={fields.name}
             onChange={set('name')}
           />
@@ -353,7 +680,7 @@ function CreateProspectForm({
           <input
             type="email"
             className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
-            placeholder="name@example.com"
+            placeholder="jamie@example.com"
             value={fields.email}
             onChange={set('email')}
           />
@@ -367,6 +694,19 @@ function CreateProspectForm({
             value={fields.phone}
             onChange={set('phone')}
           />
+        </div>
+        <div className="flex flex-col gap-1 sm:col-span-2">
+          <label className="text-xs font-medium text-zinc-500">Assigned unit (optional)</label>
+          <select
+            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            value={fields.assignedUnitId}
+            onChange={set('assignedUnitId')}
+          >
+            <option value="">— None —</option>
+            {units.filter((u) => u.status === 'available').map((u) => (
+              <option key={u.id} value={u.id}>{u.name}</option>
+            ))}
+          </select>
         </div>
       </div>
       <div className="mt-4 flex items-center gap-2">
@@ -459,14 +799,16 @@ function TasksPanel({
 
 const App = () => {
   const [prospects, setProspects] = useState<Prospect[]>([]);
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [tasks,     setTasks]     = useState<Task[]>([]);
+  const [units,     setUnits]     = useState<Unit[]>([]);
   const [prospectsLoading, setProspectsLoading] = useState(true);
-  const [tasksLoading, setTasksLoading] = useState(true);
+  const [tasksLoading,     setTasksLoading]     = useState(true);
+  const [unitsLoading,     setUnitsLoading]     = useState(true);
   const [selectedProspectId, setSelectedProspectId] = useState<string | null>(null);
-  const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
+  const [editingProspectId,  setEditingProspectId]  = useState<string | null>(null);
+  const [updatingStatusId,   setUpdatingStatusId]   = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Refresh key to re-render ProspectDetailPanel after task/status changes
   const [detailRefreshKey, setDetailRefreshKey] = useState(0);
 
   const loadProspects = useCallback(async () => {
@@ -489,10 +831,20 @@ const App = () => {
     }
   }, []);
 
+  const loadUnits = useCallback(async () => {
+    setUnitsLoading(true);
+    try {
+      setUnits(await fetchUnits());
+    } finally {
+      setUnitsLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     void loadProspects();
     void loadTasks();
-  }, [loadProspects, loadTasks]);
+    void loadUnits();
+  }, [loadProspects, loadTasks, loadUnits]);
 
   const handleStatusChange = async (
     prospectId: string,
@@ -501,13 +853,10 @@ const App = () => {
     setUpdatingStatusId(prospectId);
     try {
       const result = await patchProspectStatus(prospectId, status);
-      // Optimistically update the list
       setProspects((prev) =>
         prev.map((p) => (p.id === prospectId ? result.prospect : p))
       );
-      // Refresh tasks (automation may have created/closed some)
-      await loadTasks();
-      // Refresh detail panel if it's open for this prospect
+      await Promise.all([loadTasks(), loadUnits()]);
       if (selectedProspectId === prospectId) {
         setDetailRefreshKey((k) => k + 1);
       }
@@ -530,6 +879,25 @@ const App = () => {
     setProspects((prev) => [...prev, prospect].sort((a, b) => a.name.localeCompare(b.name)));
     setShowCreateForm(false);
     setSelectedProspectId(prospect.id);
+    void loadUnits(); // unit may now be assigned/held
+  };
+
+  const handleProspectSaved = (updated: Prospect) => {
+    setProspects((prev) =>
+      prev.map((p) => (p.id === updated.id ? updated : p))
+        .sort((a, b) => a.name.localeCompare(b.name))
+    );
+    setEditingProspectId(null);
+    setDetailRefreshKey((k) => k + 1);
+    void loadUnits();
+  };
+
+  const handleProspectDeleted = () => {
+    setProspects((prev) => prev.filter((p) => p.id !== selectedProspectId));
+    setSelectedProspectId(null);
+    setEditingProspectId(null);
+    void loadTasks();
+    void loadUnits();
   };
 
   const selectedProspect = prospects.find((p) => p.id === selectedProspectId);
@@ -638,6 +1006,7 @@ const App = () => {
 
               {showCreateForm && (
                 <CreateProspectForm
+                  units={units}
                   onCreated={handleProspectCreated}
                   onCancel={() => setShowCreateForm(false)}
                 />
@@ -651,30 +1020,57 @@ const App = () => {
                   <h2 className="text-base font-semibold text-teal-900">
                     {selectedProspect.name}
                   </h2>
-                  <button
-                    className="text-xs text-teal-600 hover:underline"
-                    onClick={() => setSelectedProspectId(null)}
-                  >
-                    Close
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      className="text-xs text-teal-600 hover:underline"
+                      onClick={() => setEditingProspectId(
+                        editingProspectId === selectedProspect.id ? null : selectedProspect.id
+                      )}
+                    >
+                      {editingProspectId === selectedProspect.id ? 'Cancel edit' : 'Edit'}
+                    </button>
+                    <button
+                      className="text-xs text-teal-600 hover:underline"
+                      onClick={() => { setSelectedProspectId(null); setEditingProspectId(null); }}
+                    >
+                      Close
+                    </button>
+                  </div>
                 </div>
                 <div className="px-4 py-4">
-                  <ProspectDetailPanel
-                    key={`${selectedProspect.id}-${detailRefreshKey}`}
-                    prospectId={selectedProspect.id}
-                    onTaskUpdated={loadTasks}
-                  />
+                  {editingProspectId === selectedProspect.id ? (
+                    <EditProspectForm
+                      prospect={selectedProspect}
+                      units={units}
+                      onSaved={handleProspectSaved}
+                      onDeleted={handleProspectDeleted}
+                      onCancel={() => setEditingProspectId(null)}
+                    />
+                  ) : (
+                    <ProspectDetailPanel
+                      key={`${selectedProspect.id}-${detailRefreshKey}`}
+                      prospectId={selectedProspect.id}
+                      onTaskUpdated={loadTasks}
+                    />
+                  )}
                 </div>
               </div>
             )}
           </div>
 
-          {/* ── Right column: Tasks sidebar ── */}
-          <TasksPanel
-            tasks={tasks}
-            loading={tasksLoading}
-            onMarkDone={handleMarkTaskDone}
-          />
+          {/* ── Right column: Units + Tasks ── */}
+          <div className="flex flex-col gap-4">
+            <UnitsPanel
+              units={units}
+              loading={unitsLoading}
+              onUnitsChanged={loadUnits}
+            />
+            <TasksPanel
+              tasks={tasks}
+              loading={tasksLoading}
+              onMarkDone={handleMarkTaskDone}
+            />
+          </div>
         </div>
       </div>
     </main>

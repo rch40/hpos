@@ -6,7 +6,8 @@ import {
   UpdateProspectStatusRequestSchema,
   UpdateTaskStateRequestSchema,
   UpdateUnitRequestSchema,
-  CreateTaskRequestSchema
+  CreateTaskRequestSchema,
+  UpdateProspectRequestSchema
 } from '@hpos/contracts';
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
@@ -25,6 +26,7 @@ import {
   deleteProspect,
   createTask,
   listActivityEvents,
+  updateProspect
 } from './repository.js';
 
 const app = express();
@@ -212,6 +214,93 @@ app.delete(
     response.sendStatus(204);
   })
 );
+
+app.post(
+  '/tasks',
+  asyncRoute(async (request, response) => {
+    // Inline validation until CreateTaskRequestSchema is wired through contracts:
+    const { title, dueDate, assignee, prospectId } = request.body as {
+      title: string;
+      dueDate: string;
+      assignee: string;
+      prospectId: string;
+    };
+    const task = await createTask({ title, dueDate, assignee, prospectId });
+    response.status(201).json(task);
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTIVITY — global feed
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.get(
+  '/activity',
+  asyncRoute(async (_request, response) => {
+    response.json(await listActivityEvents());
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UNITS — delete
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.delete(
+  '/units/:id',
+  asyncRoute(async (request, response) => {
+    const deleted = await deleteUnit(routeId(request));
+    if (!deleted) {
+      response.sendStatus(404);
+      return;
+    }
+    response.sendStatus(204);
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROSPECTS — full update (name, contact, assignee, assignedUnitId)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Add updateProspect to repository imports and implementation (see below).
+// Add UpdateProspectRequestSchema to the import from '@hpos/contracts'.
+
+app.patch(
+  '/prospects/:id',
+  asyncRoute(async (request, response) => {
+    const payload = UpdateProspectRequestSchema.parse(request.body);
+    const prospect = await updateProspect(routeId(request), payload);
+
+    if (!prospect) {
+      response.sendStatus(404);
+      return;
+    }
+
+    response.json(prospect);
+  })
+);
+
+app.delete(
+  '/prospects/:id',
+  asyncRoute(async (request, response) => {
+    const deleted = await deleteProspect(routeId(request));
+    if (!deleted) {
+      response.sendStatus(404);
+      return;
+    }
+    response.sendStatus(204);
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TASKS — create + list already present; add create endpoint
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Add CreateTaskRequestSchema to @hpos/contracts/src/leasing-crm.ts:
+//
+//   export const CreateTaskRequestSchema = TaskSchema.omit({ id: true, state: true });
+//   export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
+//
+// Then export it from packages/contracts/src/index.ts.
 
 app.post(
   '/tasks',

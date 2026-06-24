@@ -10,7 +10,7 @@ import type {
 import type { PoolClient, QueryResultRow } from 'pg';
 import { pool } from './database.js';
 import type { AutomationResult } from './rules.js';
-import type { CreateTaskRequest } from '@hpos/contracts';
+import type { CreateTaskRequest, UpdateProspectRequest } from '@hpos/contracts';
 
 
 type ProspectDetail = {
@@ -372,4 +372,35 @@ export const listActivityEvents = async (): Promise<ActivityEvent[]> => {
      LIMIT 200`
   );
   return result.rows.map(toActivityEvent);
+};
+
+export const updateProspect = async (
+  id: string,
+  payload: UpdateProspectRequest
+): Promise<Prospect | undefined> => {
+  const currentResult = await pool.query<ProspectRow>(
+    'SELECT id, name, email, phone, assigned_unit_id, status, assignee FROM prospects WHERE id = $1',
+    [id]
+  );
+  if (!currentResult.rows[0]) return undefined;
+
+  const current = toProspect(currentResult.rows[0]);
+  const next = {
+    name:           payload.name            ?? current.name,
+    email:          payload.contact?.email  ?? current.contact.email,
+    phone:          payload.contact?.phone  ?? current.contact.phone,
+    assignee:       payload.assignee        ?? current.assignee,
+    assignedUnitId: 'assignedUnitId' in payload
+      ? (payload.assignedUnitId ?? null)
+      : current.assignedUnitId,
+  };
+
+  const result = await pool.query<ProspectRow>(
+    `UPDATE prospects
+     SET name = $2, email = $3, phone = $4, assignee = $5, assigned_unit_id = $6
+     WHERE id = $1
+     RETURNING id, name, email, phone, assigned_unit_id, status, assignee`,
+    [id, next.name, next.email, next.phone, next.assignee, next.assignedUnitId]
+  );
+  return toProspect(requireRow(result.rows[0], 'prospects'));
 };
