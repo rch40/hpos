@@ -46,6 +46,19 @@ const patchTaskState = (id: string, state: Task['state']) =>
     body: JSON.stringify({ state }),
   });
 
+type CreateProspectPayload = {
+  name: string;
+  contact: { email: string; phone: string };
+  assignee: string;
+  assignedUnitId?: string | null;
+};
+
+const postProspect = (payload: CreateProspectPayload) =>
+  apiFetch<Prospect>('/prospects', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const PIPELINE_STATUSES: PipelineStatus[] = [
@@ -254,6 +267,129 @@ function ProspectDetailPanel({
   );
 }
 
+// ─── Create Prospect Form ────────────────────────────────────────────────────
+
+const EMPTY_FORM = { name: '', email: '', phone: '', assignee: '' };
+
+function CreateProspectForm({
+  onCreated,
+  onCancel,
+}: {
+  onCreated: (prospect: Prospect) => void;
+  onCancel: () => void;
+}) {
+  const [fields, setFields] = useState(EMPTY_FORM);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const set = (key: keyof typeof EMPTY_FORM) =>
+    (e: React.ChangeEvent<HTMLInputElement>) =>
+      setFields((prev) => ({ ...prev, [key]: e.target.value }));
+
+  const handleSubmit = async () => {
+    setFormError(null);
+    if (!fields.name.trim() || fields.name.trim().length < 2) {
+      setFormError('Name must be at least 2 characters.');
+      return;
+    }
+    if (!fields.email.includes('@')) {
+      setFormError('Enter a valid email address.');
+      return;
+    }
+    if (fields.phone.replace(/\D/g, '').length < 10) {
+      setFormError('Phone must be at least 10 digits.');
+      return;
+    }
+    if (!fields.assignee.trim()) {
+      setFormError('Assignee is required.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const prospect = await postProspect({
+        name: fields.name.trim(),
+        contact: { email: fields.email.trim(), phone: fields.phone.trim() },
+        assignee: fields.assignee.trim(),
+      });
+      onCreated(prospect);
+      setFields(EMPTY_FORM);
+    } catch {
+      setFormError('Failed to create prospect. Check the backend.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="border-t border-zinc-200 bg-zinc-50 px-4 py-4">
+      <h3 className="mb-3 text-sm font-semibold text-zinc-700">New Prospect</h3>
+      {formError && (
+        <p className="mb-3 rounded-md bg-red-50 px-3 py-2 text-xs text-red-600 ring-1 ring-red-200">
+          {formError}
+        </p>
+      )}
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-zinc-500">Full name</label>
+          <input
+            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            placeholder="First Last"
+            value={fields.name}
+            onChange={set('name')}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-zinc-500">Assignee</label>
+          <input
+            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            placeholder="Leasing Team"
+            value={fields.assignee}
+            onChange={set('assignee')}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-zinc-500">Email</label>
+          <input
+            type="email"
+            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            placeholder="name@example.com"
+            value={fields.email}
+            onChange={set('email')}
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-medium text-zinc-500">Phone</label>
+          <input
+            type="tel"
+            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            placeholder="5551234567"
+            value={fields.phone}
+            onChange={set('phone')}
+          />
+        </div>
+      </div>
+      <div className="mt-4 flex items-center gap-2">
+        <button
+          onClick={() => void handleSubmit()}
+          disabled={submitting}
+          className="inline-flex h-9 items-center gap-2 rounded-md bg-teal-600 px-4 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+        >
+          {submitting && <Spinner />}
+          {submitting ? 'Saving…' : 'Add prospect'}
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={submitting}
+          className="text-sm text-zinc-500 hover:text-zinc-700"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Tasks Panel (global) ────────────────────────────────────────────────────
 
 function TasksPanel({
@@ -328,6 +464,7 @@ const App = () => {
   const [tasksLoading, setTasksLoading] = useState(true);
   const [selectedProspectId, setSelectedProspectId] = useState<string | null>(null);
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Refresh key to re-render ProspectDetailPanel after task/status changes
   const [detailRefreshKey, setDetailRefreshKey] = useState(0);
@@ -389,6 +526,12 @@ const App = () => {
     }
   };
 
+  const handleProspectCreated = (prospect: Prospect) => {
+    setProspects((prev) => [...prev, prospect].sort((a, b) => a.name.localeCompare(b.name)));
+    setShowCreateForm(false);
+    setSelectedProspectId(prospect.id);
+  };
+
   const selectedProspect = prospects.find((p) => p.id === selectedProspectId);
 
   return (
@@ -421,7 +564,15 @@ const App = () => {
             <div className="rounded-md border border-zinc-200 bg-white">
               <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
                 <h2 className="text-lg font-semibold">Prospects</h2>
-                {prospectsLoading && <Spinner />}
+                <div className="flex items-center gap-3">
+                  {prospectsLoading && <Spinner />}
+                  <button
+                    onClick={() => setShowCreateForm((v) => !v)}
+                    className="inline-flex h-8 items-center gap-1 rounded-md bg-teal-600 px-3 text-sm font-medium text-white hover:bg-teal-700"
+                  >
+                    {showCreateForm ? '✕ Cancel' : '+ Add'}
+                  </button>
+                </div>
               </div>
 
               {prospects.length === 0 && !prospectsLoading ? (
@@ -483,6 +634,13 @@ const App = () => {
                     </li>
                   ))}
                 </ul>
+              )}
+
+              {showCreateForm && (
+                <CreateProspectForm
+                  onCreated={handleProspectCreated}
+                  onCancel={() => setShowCreateForm(false)}
+                />
               )}
             </div>
 

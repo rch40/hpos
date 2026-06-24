@@ -76,9 +76,11 @@ export const UpdateUnitRequestSchema = CreateUnitRequestSchema.partial();
 
 export const CreateProspectRequestSchema = ProspectSchema.omit({
   id: true,
-  status: true
+  status: true,
+  assignedUnitId: true,
 }).extend({
-  status: PipelineStatusSchema.optional()
+  status: PipelineStatusSchema.optional(),
+  assignedUnitId: IdSchema.nullable().optional(),
 });
 
 export const UpdateProspectRequestSchema = ProspectSchema.omit({ id: true }).partial();
