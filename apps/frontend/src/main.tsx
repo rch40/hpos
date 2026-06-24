@@ -1,75 +1,530 @@
-import React from 'react';
+/// <reference types="vite/client" />
+import React, { useEffect, useState, useCallback } from 'react';
 import ReactDOM from 'react-dom/client';
-import type { PipelineStatus, Prospect } from '@hpos/contracts';
+import type {
+  ActivityEvent,
+  PipelineStatus,
+  Prospect,
+  Task,
+} from '@hpos/contracts';
 import './styles.css';
 
-const statuses: PipelineStatus[] = [
+const API = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
+
+// ─── API helpers ────────────────────────────────────────────────────────────
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API}${path}`, {
+    headers: { 'Content-Type': 'application/json' },
+    ...init,
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json() as Promise<T>;
+}
+
+const fetchProspects = () => apiFetch<Prospect[]>('/prospects');
+const fetchTasks = () => apiFetch<Task[]>('/tasks');
+
+type ProspectDetail = {
+  prospect: Prospect;
+  tasks: Task[];
+  activityEvents: ActivityEvent[];
+};
+
+const fetchProspectDetail = (id: string) =>
+  apiFetch<ProspectDetail>(`/prospects/${id}`);
+
+const patchProspectStatus = (id: string, status: PipelineStatus) =>
+  apiFetch<{ prospect: Prospect }>(`/prospects/${id}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+
+const patchTaskState = (id: string, state: Task['state']) =>
+  apiFetch<Task>(`/tasks/${id}/state`, {
+    method: 'PATCH',
+    body: JSON.stringify({ state }),
+  });
+
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+const PIPELINE_STATUSES: PipelineStatus[] = [
   'new',
   'contacted',
   'tour_scheduled',
   'toured',
   'application',
   'leased',
-  'lost'
+  'lost',
 ];
 
-const seedProspects: Prospect[] = [
-  {
-    id: '7b0644d7-5a60-470f-8159-4529c49f3a9d',
-    name: 'Jamie Rivera',
-    contact: { email: 'jamie@example.com', phone: '5551234567' },
-    assignedUnitId: '5c7425f8-e7b5-44bf-83cd-54a63feb6817',
-    status: 'new',
-    assignee: 'Leasing Team'
-  }
-];
+const STATUS_COLORS: Record<PipelineStatus, string> = {
+  new: 'bg-zinc-100 text-zinc-700',
+  contacted: 'bg-sky-100 text-sky-700',
+  tour_scheduled: 'bg-violet-100 text-violet-700',
+  toured: 'bg-amber-100 text-amber-700',
+  application: 'bg-orange-100 text-orange-700',
+  leased: 'bg-teal-100 text-teal-700',
+  lost: 'bg-red-100 text-red-600',
+};
 
-const App = () => (
-  <main className="min-h-screen bg-zinc-50 text-zinc-950">
-    <div className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
-      <header className="flex flex-col gap-2 border-b border-zinc-200 pb-5">
-        <p className="text-sm font-semibold uppercase tracking-wide text-teal-700">HP Labs assessment</p>
-        <h1 className="text-3xl font-semibold tracking-normal">Leasing CRM</h1>
-      </header>
+const EVENT_ICONS: Record<ActivityEvent['type'], string> = {
+  prospect_created: '✦',
+  prospect_status_changed: '→',
+  task_created: '＋',
+  task_closed: '✓',
+  tour_scheduled: '📅',
+  tour_outcome_recorded: '📋',
+  unit_status_changed: '🏠',
+};
 
-      <section className="grid gap-4 md:grid-cols-[1.4fr_1fr]">
-        <div className="rounded-md border border-zinc-200 bg-white">
-          <div className="border-b border-zinc-200 px-4 py-3">
-            <h2 className="text-lg font-semibold">Prospects</h2>
-          </div>
-          <div className="divide-y divide-zinc-100">
-            {seedProspects.map((prospect) => (
-              <article key={prospect.id} className="grid gap-3 px-4 py-4 sm:grid-cols-[1fr_auto]">
-                <div>
-                  <h3 className="font-medium">{prospect.name}</h3>
-                  <p className="text-sm text-zinc-600">{prospect.contact.email}</p>
-                </div>
-                <select
-                  className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm"
-                  defaultValue={prospect.status}
-                >
-                  {statuses.map((status) => (
-                    <option key={status} value={status}>
-                      {status.replace('_', ' ')}
-                    </option>
-                  ))}
-                </select>
-              </article>
-            ))}
-          </div>
-        </div>
+// ─── Small UI atoms ──────────────────────────────────────────────────────────
 
-        <aside className="rounded-md border border-zinc-200 bg-white">
-          <div className="border-b border-zinc-200 px-4 py-3">
-            <h2 className="text-lg font-semibold">Automation Queue</h2>
-          </div>
-          <div className="px-4 py-4 text-sm text-zinc-600">
-            Status changes will create tasks and activity events through the backend rule layer.
-          </div>
-        </aside>
-      </section>
-    </div>
-  </main>
+const Badge = ({ status }: { status: PipelineStatus }) => (
+  <span
+    className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[status]}`}
+  >
+    {status.replace(/_/g, ' ')}
+  </span>
 );
 
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(<App />);
+const Spinner = () => (
+  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-zinc-300 border-t-teal-600" />
+);
+
+const EmptyState = ({ message }: { message: string }) => (
+  <p className="px-4 py-6 text-center text-sm text-zinc-400">{message}</p>
+);
+
+// ─── Prospect Detail Panel ───────────────────────────────────────────────────
+
+function ProspectDetailPanel({
+  prospectId,
+  onTaskUpdated,
+}: {
+  prospectId: string;
+  onTaskUpdated: () => void;
+}) {
+  const [detail, setDetail] = useState<ProspectDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [closingTaskId, setClosingTaskId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await fetchProspectDetail(prospectId);
+      setDetail(d);
+    } finally {
+      setLoading(false);
+    }
+  }, [prospectId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const handleMarkDone = async (taskId: string) => {
+    setClosingTaskId(taskId);
+    try {
+      await patchTaskState(taskId, 'done');
+      await load();
+      onTaskUpdated();
+    } finally {
+      setClosingTaskId(null);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Spinner />
+      </div>
+    );
+  }
+
+  if (!detail) return null;
+
+  const { prospect, tasks, activityEvents } = detail;
+  const openTasks = tasks.filter((t) => t.state === 'open');
+  const doneTasks = tasks.filter((t) => t.state === 'done');
+
+  return (
+    <div className="flex flex-col gap-6">
+      {/* Contact info */}
+      <section>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+          Contact
+        </h3>
+        <dl className="grid gap-1 text-sm">
+          <div className="flex gap-2">
+            <dt className="w-12 shrink-0 text-zinc-400">Email</dt>
+            <dd className="text-zinc-800">{prospect.contact.email}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="w-12 shrink-0 text-zinc-400">Phone</dt>
+            <dd className="text-zinc-800">{prospect.contact.phone}</dd>
+          </div>
+          <div className="flex gap-2">
+            <dt className="w-12 shrink-0 text-zinc-400">Owner</dt>
+            <dd className="text-zinc-800">{prospect.assignee}</dd>
+          </div>
+        </dl>
+      </section>
+
+      {/* Open tasks */}
+      <section>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+          Open Tasks ({openTasks.length})
+        </h3>
+        {openTasks.length === 0 ? (
+          <EmptyState message="No open tasks" />
+        ) : (
+          <ul className="flex flex-col gap-2">
+            {openTasks.map((task) => (
+              <li
+                key={task.id}
+                className="flex items-start gap-3 rounded-md border border-zinc-200 bg-white px-3 py-2.5"
+              >
+                <button
+                  onClick={() => void handleMarkDone(task.id)}
+                  disabled={closingTaskId === task.id}
+                  className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 border-zinc-300 hover:border-teal-500 disabled:opacity-50"
+                  title="Mark done"
+                >
+                  {closingTaskId === task.id && (
+                    <span className="h-2 w-2 rounded-full bg-teal-500" />
+                  )}
+                </button>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-zinc-800">{task.title}</p>
+                  <p className="text-xs text-zinc-400">
+                    Due {new Date(task.dueDate).toLocaleDateString()} · {task.assignee}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Done tasks (collapsed) */}
+      {doneTasks.length > 0 && (
+        <section>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+            Completed ({doneTasks.length})
+          </h3>
+          <ul className="flex flex-col gap-1">
+            {doneTasks.map((task) => (
+              <li
+                key={task.id}
+                className="flex items-center gap-3 px-3 py-1.5 text-sm text-zinc-400 line-through"
+              >
+                <span className="text-teal-400">✓</span>
+                {task.title}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* Activity timeline */}
+      <section>
+        <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+          Activity Timeline
+        </h3>
+        {activityEvents.length === 0 ? (
+          <EmptyState message="No activity yet" />
+        ) : (
+          <ol className="relative border-l border-zinc-200 pl-5">
+            {activityEvents.map((event) => (
+              <li key={event.id} className="mb-4 last:mb-0">
+                <span className="absolute -left-2.5 flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs ring-1 ring-zinc-200">
+                  {EVENT_ICONS[event.type] ?? '•'}
+                </span>
+                <p className="text-sm text-zinc-800">{event.summary}</p>
+                <time className="text-xs text-zinc-400">
+                  {new Date(event.timestamp).toLocaleString()}
+                </time>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+    </div>
+  );
+}
+
+// ─── Tasks Panel (global) ────────────────────────────────────────────────────
+
+function TasksPanel({
+  tasks,
+  loading,
+  onMarkDone,
+}: {
+  tasks: Task[];
+  loading: boolean;
+  onMarkDone: (id: string) => Promise<void>;
+}) {
+  const [closingId, setClosingId] = useState<string | null>(null);
+  const openTasks = tasks.filter((t) => t.state === 'open');
+
+  const handle = async (id: string) => {
+    setClosingId(id);
+    try {
+      await onMarkDone(id);
+    } finally {
+      setClosingId(null);
+    }
+  };
+
+  return (
+    <aside className="rounded-md border border-zinc-200 bg-white">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
+        <h2 className="text-lg font-semibold">Open Tasks</h2>
+        {loading ? (
+          <Spinner />
+        ) : (
+          <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-600">
+            {openTasks.length}
+          </span>
+        )}
+      </div>
+      {openTasks.length === 0 && !loading ? (
+        <EmptyState message="All tasks complete" />
+      ) : (
+        <ul className="divide-y divide-zinc-100">
+          {openTasks.map((task) => (
+            <li key={task.id} className="flex items-start gap-3 px-4 py-3">
+              <button
+                onClick={() => void handle(task.id)}
+                disabled={closingId === task.id}
+                className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 border-zinc-300 hover:border-teal-500 disabled:opacity-50"
+                title="Mark done"
+              >
+                {closingId === task.id && (
+                  <span className="h-2 w-2 rounded-full bg-teal-500" />
+                )}
+              </button>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-zinc-800">{task.title}</p>
+                <p className="text-xs text-zinc-400">
+                  Due {new Date(task.dueDate).toLocaleDateString()} · {task.assignee}
+                </p>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </aside>
+  );
+}
+
+// ─── Main App ────────────────────────────────────────────────────────────────
+
+const App = () => {
+  const [prospects, setProspects] = useState<Prospect[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [prospectsLoading, setProspectsLoading] = useState(true);
+  const [tasksLoading, setTasksLoading] = useState(true);
+  const [selectedProspectId, setSelectedProspectId] = useState<string | null>(null);
+  const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Refresh key to re-render ProspectDetailPanel after task/status changes
+  const [detailRefreshKey, setDetailRefreshKey] = useState(0);
+
+  const loadProspects = useCallback(async () => {
+    setProspectsLoading(true);
+    try {
+      setProspects(await fetchProspects());
+    } catch {
+      setError('Failed to load prospects. Is the backend running?');
+    } finally {
+      setProspectsLoading(false);
+    }
+  }, []);
+
+  const loadTasks = useCallback(async () => {
+    setTasksLoading(true);
+    try {
+      setTasks(await fetchTasks());
+    } finally {
+      setTasksLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadProspects();
+    void loadTasks();
+  }, [loadProspects, loadTasks]);
+
+  const handleStatusChange = async (
+    prospectId: string,
+    status: PipelineStatus
+  ) => {
+    setUpdatingStatusId(prospectId);
+    try {
+      const result = await patchProspectStatus(prospectId, status);
+      // Optimistically update the list
+      setProspects((prev) =>
+        prev.map((p) => (p.id === prospectId ? result.prospect : p))
+      );
+      // Refresh tasks (automation may have created/closed some)
+      await loadTasks();
+      // Refresh detail panel if it's open for this prospect
+      if (selectedProspectId === prospectId) {
+        setDetailRefreshKey((k) => k + 1);
+      }
+    } catch {
+      setError('Failed to update status');
+    } finally {
+      setUpdatingStatusId(null);
+    }
+  };
+
+  const handleMarkTaskDone = async (taskId: string) => {
+    await patchTaskState(taskId, 'done');
+    await loadTasks();
+    if (selectedProspectId) {
+      setDetailRefreshKey((k) => k + 1);
+    }
+  };
+
+  const selectedProspect = prospects.find((p) => p.id === selectedProspectId);
+
+  return (
+    <main className="min-h-screen bg-zinc-50 text-zinc-950">
+      <div className="mx-auto flex max-w-6xl flex-col gap-6 px-6 py-8">
+        {/* Header */}
+        <header className="flex flex-col gap-2 border-b border-zinc-200 pb-5">
+          <p className="text-sm font-semibold uppercase tracking-wide text-teal-700">
+            HP Labs Assessment
+          </p>
+          <h1 className="text-3xl font-semibold">Leasing CRM</h1>
+        </header>
+
+        {error && (
+          <div className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-red-200">
+            {error}{' '}
+            <button
+              className="font-semibold underline"
+              onClick={() => setError(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
+          {/* ── Left column: Prospects + detail ── */}
+          <div className="flex flex-col gap-4">
+            {/* Prospects list */}
+            <div className="rounded-md border border-zinc-200 bg-white">
+              <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
+                <h2 className="text-lg font-semibold">Prospects</h2>
+                {prospectsLoading && <Spinner />}
+              </div>
+
+              {prospects.length === 0 && !prospectsLoading ? (
+                <EmptyState message="No prospects yet" />
+              ) : (
+                <ul className="divide-y divide-zinc-100">
+                  {prospects.map((prospect) => (
+                    <li key={prospect.id}>
+                      <article
+                        className={`grid cursor-pointer gap-3 px-4 py-4 transition-colors sm:grid-cols-[1fr_auto] ${
+                          selectedProspectId === prospect.id
+                            ? 'bg-teal-50'
+                            : 'hover:bg-zinc-50'
+                        }`}
+                        onClick={() =>
+                          setSelectedProspectId(
+                            selectedProspectId === prospect.id ? null : prospect.id
+                          )
+                        }
+                      >
+                        <div className="min-w-0">
+                          <h3 className="font-medium">{prospect.name}</h3>
+                          <p className="text-sm text-zinc-500">
+                            {prospect.contact.email}
+                          </p>
+                          <div className="mt-1">
+                            <Badge status={prospect.status} />
+                          </div>
+                        </div>
+
+                        <div
+                          className="flex items-start"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {updatingStatusId === prospect.id ? (
+                            <div className="flex h-10 w-44 items-center justify-center">
+                              <Spinner />
+                            </div>
+                          ) : (
+                            <select
+                              className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                              value={prospect.status}
+                              onChange={(e) =>
+                                void handleStatusChange(
+                                  prospect.id,
+                                  e.target.value as PipelineStatus
+                                )
+                              }
+                            >
+                              {PIPELINE_STATUSES.map((s) => (
+                                <option key={s} value={s}>
+                                  {s.replace(/_/g, ' ')}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                      </article>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* Detail panel */}
+            {selectedProspect && (
+              <div className="rounded-md border border-teal-200 bg-white">
+                <div className="flex items-center justify-between border-b border-teal-200 bg-teal-50 px-4 py-3">
+                  <h2 className="text-base font-semibold text-teal-900">
+                    {selectedProspect.name}
+                  </h2>
+                  <button
+                    className="text-xs text-teal-600 hover:underline"
+                    onClick={() => setSelectedProspectId(null)}
+                  >
+                    Close
+                  </button>
+                </div>
+                <div className="px-4 py-4">
+                  <ProspectDetailPanel
+                    key={`${selectedProspect.id}-${detailRefreshKey}`}
+                    prospectId={selectedProspect.id}
+                    onTaskUpdated={loadTasks}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── Right column: Tasks sidebar ── */}
+          <TasksPanel
+            tasks={tasks}
+            loading={tasksLoading}
+            onMarkDone={handleMarkTaskDone}
+          />
+        </div>
+      </div>
+    </main>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);

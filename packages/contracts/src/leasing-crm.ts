@@ -100,6 +100,8 @@ export const UpdateTaskStateRequestSchema = z.object({
   state: TaskStateSchema
 });
 
+export const CreateTaskRequestSchema = TaskSchema.omit({ id: true, state: true });
+
 export type UnitStatus = z.infer<typeof UnitStatusSchema>;
 export type PipelineStatus = z.infer<typeof PipelineStatusSchema>;
 export type TourOutcome = z.infer<typeof TourOutcomeSchema>;
@@ -119,3 +121,4 @@ export type UpdateProspectStatusRequest = z.infer<typeof UpdateProspectStatusReq
 export type CreateTourRequest = z.infer<typeof CreateTourRequestSchema>;
 export type RecordTourOutcomeRequest = z.infer<typeof RecordTourOutcomeRequestSchema>;
 export type UpdateTaskStateRequest = z.infer<typeof UpdateTaskStateRequestSchema>;
+export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;

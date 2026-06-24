@@ -5,7 +5,8 @@ import {
   CreateUnitRequestSchema,
   UpdateProspectStatusRequestSchema,
   UpdateTaskStateRequestSchema,
-  UpdateUnitRequestSchema
+  UpdateUnitRequestSchema,
+  CreateTaskRequestSchema
 } from '@hpos/contracts';
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
@@ -19,7 +20,11 @@ import {
   listUnits,
   updateProspectStatus,
   updateTaskState,
-  updateUnit
+  updateUnit,
+  deleteUnit,
+  deleteProspect,
+  createTask,
+  listActivityEvents,
 } from './repository.js';
 
 const app = express();
@@ -168,3 +173,68 @@ const port = Number(process.env.PORT ?? 4000);
 app.listen(port, () => {
   console.log(`Leasing CRM API listening on http://localhost:${port}`);
 });
+
+// ─── Paste these routes into apps/backend/src/server.ts ─────────────────────
+// Add these to the import from './repository.js':
+//   deleteUnit, deleteProspect, createTask, listActivityEvents
+
+// ─── Additional imports needed at the top of server.ts ───────────────────────
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UNITS — delete
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.delete(
+  '/units/:id',
+  asyncRoute(async (request, response) => {
+    const deleted = await deleteUnit(routeId(request));
+    if (!deleted) {
+      response.sendStatus(404);
+      return;
+    }
+    response.sendStatus(204);
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PROSPECTS — delete + update (full patch, not just status)
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.delete(
+  '/prospects/:id',
+  asyncRoute(async (request, response) => {
+    const deleted = await deleteProspect(routeId(request));
+    if (!deleted) {
+      response.sendStatus(404);
+      return;
+    }
+    response.sendStatus(204);
+  })
+);
+
+app.post(
+  '/tasks',
+  asyncRoute(async (request, response) => {
+    // Inline validation until CreateTaskRequestSchema is wired through contracts:
+    const { title, dueDate, assignee, prospectId } = request.body as {
+      title: string;
+      dueDate: string;
+      assignee: string;
+      prospectId: string;
+    };
+    const task = await createTask({ title, dueDate, assignee, prospectId });
+    response.status(201).json(task);
+  })
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ACTIVITY — global feed
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.get(
+  '/activity',
+  asyncRoute(async (_request, response) => {
+    response.json(await listActivityEvents());
+  })
+);

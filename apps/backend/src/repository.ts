@@ -10,6 +10,8 @@ import type {
 import type { PoolClient, QueryResultRow } from 'pg';
 import { pool } from './database.js';
 import type { AutomationResult } from './rules.js';
+import type { CreateTaskRequest } from '@hpos/contracts';
+
 
 type ProspectDetail = {
   prospect: Prospect;
@@ -170,20 +172,44 @@ export const getProspectDetail = async (id: string): Promise<ProspectDetail | un
 };
 
 export const createProspect = async (payload: CreateProspectRequest): Promise<Prospect> => {
-  const result = await pool.query<ProspectRow>(
-    `INSERT INTO prospects (name, email, phone, assigned_unit_id, status, assignee)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, name, email, phone, assigned_unit_id, status, assignee`,
-    [
-      payload.name,
-      payload.contact.email,
-      payload.contact.phone,
-      payload.assignedUnitId,
-      payload.status ?? 'new',
-      payload.assignee
-    ]
-  );
-  return toProspect(requireRow(result.rows[0], 'prospects'));
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const result = await client.query<ProspectRow>(
+      `INSERT INTO prospects (name, email, phone, assigned_unit_id, status, assignee)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, name, email, phone, assigned_unit_id, status, assignee`,
+      [
+        payload.name,
+        payload.contact.email,
+        payload.contact.phone,
+        payload.assignedUnitId ?? null,
+        payload.status ?? 'new',
+        payload.assignee
+      ]
+    );
+    const prospect = toProspect(requireRow(result.rows[0], 'prospects'));
+
+    // Log a prospect_created activity event so the timeline isn't empty
+    await client.query(
+      `INSERT INTO activity_events (type, prospect_id, unit_id, summary)
+       VALUES ('prospect_created', $1, $2, $3)`,
+      [
+        prospect.id,
+        prospect.assignedUnitId,
+        `${prospect.name} added to the pipeline`
+      ]
+    );
+
+    await client.query('COMMIT');
+    return prospect;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
 export const updateProspectStatus = async (
@@ -289,4 +315,61 @@ const selectOpenTasks = async (client: PoolClient, prospectId: string): Promise<
 const selectUnits = async (client: PoolClient): Promise<Unit[]> => {
   const result = await client.query<UnitRow>('SELECT id, name, status FROM units ORDER BY name');
   return result.rows.map(toUnit);
+};
+
+// ─── DELETE UNIT ─────────────────────────────────────────────────────────────
+
+export const deleteUnit = async (id: string): Promise<boolean> => {
+  const result = await pool.query<{ id: string }>(
+    'DELETE FROM units WHERE id = $1 RETURNING id',
+    [id]
+  );
+  return (result.rowCount ?? 0) > 0;
+};
+
+// ─── DELETE PROSPECT ──────────────────────────────────────────────────────────
+// Tasks cascade-delete via ON DELETE CASCADE.
+// Activity events cascade-delete via ON DELETE CASCADE.
+
+export const deleteProspect = async (id: string): Promise<boolean> => {
+  const result = await pool.query<{ id: string }>(
+    'DELETE FROM prospects WHERE id = $1 RETURNING id',
+    [id]
+  );
+  return (result.rowCount ?? 0) > 0;
+};
+
+// ─── CREATE TASK ──────────────────────────────────────────────────────────────
+// Type for the payload — add to @hpos/contracts if you want schema validation.
+// Minimum fields match the Task schema minus id and state.
+
+type CreateTaskPayload = {
+  title: string;
+  dueDate: string; // ISO datetime
+  assignee: string;
+  prospectId: string;
+};
+
+export const createTask = async (payload: CreateTaskPayload): Promise<Task> => {
+  const result = await pool.query<TaskRow>(
+    `INSERT INTO tasks (title, due_date, assignee, prospect_id, state)
+     VALUES ($1, $2, $3, $4, 'open')
+     RETURNING id, title, due_date, assignee, prospect_id, state`,
+    [payload.title, payload.dueDate, payload.assignee, payload.prospectId]
+  );
+  return toTask(requireRow(result.rows[0], 'tasks'));
+};
+
+// ─── LIST ACTIVITY EVENTS (global) ───────────────────────────────────────────
+// Already covered per-prospect inside getProspectDetail.
+// This variant returns all events for a dashboard / audit view.
+
+export const listActivityEvents = async (): Promise<ActivityEvent[]> => {
+  const result = await pool.query<ActivityEventRow>(
+    `SELECT id, type, occurred_at, prospect_id, unit_id, summary
+     FROM activity_events
+     ORDER BY occurred_at DESC
+     LIMIT 200`
+  );
+  return result.rows.map(toActivityEvent);
 };
