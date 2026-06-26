@@ -1,16 +1,20 @@
 import type {
   ActivityEvent,
   CreateProspectRequest,
+  CreateTourRequest,
   CreateUnitRequest,
   Prospect,
   Task,
+  Tour,
+  TourOutcome,
   Unit,
-  UpdateUnitRequest
+  UpdateUnitRequest,
+  UpdateProspectRequest,
+  CreateTaskRequest,
 } from '@hpos/contracts';
 import type { PoolClient, QueryResultRow } from 'pg';
 import { pool } from './database.js';
 import type { AutomationResult } from './rules.js';
-import type { CreateTaskRequest, UpdateProspectRequest } from '@hpos/contracts';
 
 
 type ProspectDetail = {
@@ -53,6 +57,14 @@ type ActivityEventRow = QueryResultRow & {
   summary: string;
 };
 
+type TourRow = QueryResultRow & {
+  id: string;
+  prospect_id: string;
+  unit_id: string;
+  scheduled_at: Date;
+  outcome: TourOutcome | null;
+};
+
 const toUnit = (row: UnitRow): Unit => ({
   id: row.id,
   name: row.name,
@@ -78,6 +90,14 @@ const toTask = (row: TaskRow): Task => ({
   assignee: row.assignee,
   prospectId: row.prospect_id,
   state: row.state
+});
+
+const toTour = (row: TourRow): Tour => ({
+  id: row.id,
+  prospectId: row.prospect_id,
+  unitId: row.unit_id,
+  scheduledAt: row.scheduled_at.toISOString(),
+  outcome: row.outcome
 });
 
 const toActivityEvent = (row: ActivityEventRow): ActivityEvent => ({
@@ -372,6 +392,76 @@ export const listActivityEvents = async (): Promise<ActivityEvent[]> => {
      LIMIT 200`
   );
   return result.rows.map(toActivityEvent);
+};
+
+// ─── TOURS ───────────────────────────────────────────────────────────────────
+
+export class DoubleBookingError extends Error {
+  constructor() { super('Unit already has a tour scheduled at that time'); }
+}
+
+export const listTours = async (): Promise<Tour[]> => {
+  const result = await pool.query<TourRow>(
+    'SELECT id, prospect_id, unit_id, scheduled_at, outcome FROM tours ORDER BY scheduled_at'
+  );
+  return result.rows.map(toTour);
+};
+
+export const getToursByProspect = async (prospectId: string): Promise<Tour[]> => {
+  const result = await pool.query<TourRow>(
+    'SELECT id, prospect_id, unit_id, scheduled_at, outcome FROM tours WHERE prospect_id = $1 ORDER BY scheduled_at',
+    [prospectId]
+  );
+  return result.rows.map(toTour);
+};
+
+export const createTour = async (payload: CreateTourRequest): Promise<Tour> => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Double-booking guard: reject if the unit has any non-cancelled tour within 1 hour of the requested time
+    const conflict = await client.query<{ id: string }>(
+      `SELECT id FROM tours
+       WHERE unit_id = $1
+         AND outcome IS DISTINCT FROM 'cancelled'
+         AND ABS(EXTRACT(EPOCH FROM (scheduled_at - $2::timestamptz))) < 3600
+       FOR UPDATE`,
+      [payload.unitId, payload.scheduledAt]
+    );
+    if ((conflict.rowCount ?? 0) > 0) {
+      await client.query('ROLLBACK');
+      throw new DoubleBookingError();
+    }
+
+    const result = await client.query<TourRow>(
+      `INSERT INTO tours (prospect_id, unit_id, scheduled_at)
+       VALUES ($1, $2, $3)
+       RETURNING id, prospect_id, unit_id, scheduled_at, outcome`,
+      [payload.prospectId, payload.unitId, payload.scheduledAt]
+    );
+    await client.query('COMMIT');
+    return toTour(requireRow(result.rows[0], 'tours'));
+  } catch (error) {
+    if (!(error instanceof DoubleBookingError)) await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+export const recordTourOutcome = async (
+  id: string,
+  outcome: TourOutcome
+): Promise<Tour | undefined> => {
+  const result = await pool.query<TourRow>(
+    `UPDATE tours SET outcome = $2
+     WHERE id = $1
+     RETURNING id, prospect_id, unit_id, scheduled_at, outcome`,
+    [id, outcome]
+  );
+  const row = result.rows[0];
+  return row ? toTour(row) : undefined;
 };
 
 export const updateProspect = async (

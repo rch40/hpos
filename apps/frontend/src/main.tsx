@@ -6,6 +6,8 @@ import type {
   PipelineStatus,
   Prospect,
   Task,
+  Tour,
+  TourOutcome,
   Unit,
   UnitStatus,
 } from '@hpos/contracts';
@@ -32,10 +34,16 @@ type ProspectDetail = {
   prospect: Prospect;
   tasks: Task[];
   activityEvents: ActivityEvent[];
+  tours?: Tour[];
 };
 
-const fetchProspectDetail = (id: string) =>
-  apiFetch<ProspectDetail>(`/prospects/${id}`);
+const fetchProspectDetail = async (id: string): Promise<ProspectDetail> => {
+  const [detail, tours] = await Promise.all([
+    apiFetch<Omit<ProspectDetail, 'tours'>>(`/prospects/${id}`),
+    fetchToursByProspect(id),
+  ]);
+  return { ...detail, tours };
+};
 
 const patchProspectStatus = (id: string, status: PipelineStatus) =>
   apiFetch<{ prospect: Prospect }>(`/prospects/${id}/status`, {
@@ -87,6 +95,21 @@ const postUnit = (payload: { name: string; status: UnitStatus }) =>
 const deleteUnit = (id: string) =>
   apiFetch<void>(`/units/${id}`, { method: 'DELETE' });
 
+const fetchToursByProspect = (prospectId: string) =>
+  apiFetch<Tour[]>(`/prospects/${prospectId}/tours`);
+
+const postTour = (payload: { prospectId: string; unitId: string; scheduledAt: string }) =>
+  apiFetch<Tour>('/tours', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+const patchTourOutcome = (tourId: string, outcome: TourOutcome) =>
+  apiFetch<Tour>(`/tours/${tourId}/outcome`, {
+    method: 'PATCH',
+    body: JSON.stringify({ outcome }),
+  });
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const PIPELINE_STATUSES: PipelineStatus[] = [
@@ -98,6 +121,16 @@ const PIPELINE_STATUSES: PipelineStatus[] = [
   'leased',
   'lost',
 ];
+
+const STATUS_LABELS: Record<PipelineStatus, string> = {
+  new: 'new',
+  contacted: 'contacted',
+  tour_scheduled: 'tour scheduled',
+  toured: 'tour completed',
+  application: 'application',
+  leased: 'leased',
+  lost: 'lost',
+};
 
 const STATUS_COLORS: Record<PipelineStatus, string> = {
   new: 'bg-zinc-100 text-zinc-700',
@@ -125,7 +158,7 @@ const Badge = ({ status }: { status: PipelineStatus }) => (
   <span
     className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_COLORS[status]}`}
   >
-    {status.replace(/_/g, ' ')}
+    {STATUS_LABELS[status]}
   </span>
 );
 
@@ -137,13 +170,184 @@ const EmptyState = ({ message }: { message: string }) => (
   <p className="px-4 py-6 text-center text-sm text-zinc-400">{message}</p>
 );
 
+// ─── Tours Section ───────────────────────────────────────────────────────────
+
+const OUTCOME_LABELS: Record<TourOutcome, string> = {
+  completed: 'Completed',
+  no_show: 'No-show',
+  cancelled: 'Cancelled',
+};
+
+function ToursSection({
+  prospect,
+  units,
+  tours,
+  onChanged,
+}: {
+  prospect: Prospect;
+  units: Unit[];
+  tours: Tour[];
+  onChanged: () => void;
+}) {
+  const [showForm, setShowForm] = useState(false);
+  const [unitId, setUnitId] = useState('');
+  const [scheduledAt, setScheduledAt] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [recordingId, setRecordingId] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const availableUnits = units.filter(
+    (u) => u.status === 'available' || u.id === prospect.assignedUnitId
+  );
+
+  const handleSchedule = async () => {
+    setFormError(null);
+    if (!unitId) { setFormError('Select a unit.'); return; }
+    if (!scheduledAt) { setFormError('Pick a date and time.'); return; }
+    setSubmitting(true);
+    try {
+      await postTour({ prospectId: prospect.id, unitId, scheduledAt: new Date(scheduledAt).toISOString() });
+      setShowForm(false);
+      setUnitId('');
+      setScheduledAt('');
+      onChanged();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to schedule tour.';
+      setFormError(msg.includes('409') || msg.toLowerCase().includes('double') ? 'That unit is already booked within 1 hour of this time.' : 'Failed to schedule tour.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleOutcome = async (tourId: string, outcome: TourOutcome) => {
+    setRecordingId(tourId);
+    try {
+      await patchTourOutcome(tourId, outcome);
+      onChanged();
+    } finally {
+      setRecordingId(null);
+    }
+  };
+
+  return (
+    <section>
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-400">
+          Tours ({tours.length})
+        </h3>
+        <button
+          onClick={() => { setShowForm((v) => !v); setFormError(null); }}
+          className="text-xs text-teal-600 hover:underline"
+        >
+          {showForm ? 'Cancel' : '+ Schedule'}
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="mb-3 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+          {formError && (
+            <p className="mb-2 text-xs text-red-600">{formError}</p>
+          )}
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-zinc-500">Unit</label>
+              <select
+                className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                value={unitId}
+                onChange={(e) => setUnitId(e.target.value)}
+              >
+                <option value="">— Select —</option>
+                {availableUnits.map((u) => (
+                  <option key={u.id} value={u.id}>{u.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-zinc-500">Date &amp; time</label>
+              <input
+                type="datetime-local"
+                className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                value={scheduledAt}
+                onChange={(e) => setScheduledAt(e.target.value)}
+              />
+            </div>
+          </div>
+          <button
+            onClick={() => void handleSchedule()}
+            disabled={submitting}
+            className="mt-2 inline-flex h-8 items-center gap-2 rounded-md bg-teal-600 px-3 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+          >
+            {submitting ? <Spinner /> : 'Confirm'}
+          </button>
+        </div>
+      )}
+
+      {tours.length === 0 ? (
+        <EmptyState message="No tours scheduled" />
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {tours.map((tour) => (
+            <li
+              key={tour.id}
+              className="flex items-start justify-between gap-3 rounded-md border border-zinc-200 bg-white px-3 py-2.5"
+            >
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-zinc-800">
+                  {new Date(tour.scheduledAt).toLocaleString()}
+                </p>
+                <p className="text-xs text-zinc-400">Unit: {units.find((u) => u.id === tour.unitId)?.name ?? tour.unitId}</p>
+              </div>
+              {tour.outcome ? (
+                <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                  tour.outcome === 'completed' ? 'bg-teal-100 text-teal-700' : 'bg-zinc-100 text-zinc-500'
+                }`}>
+                  {OUTCOME_LABELS[tour.outcome]}
+                </span>
+              ) : (
+                <div className="flex shrink-0 items-center gap-1">
+                  {recordingId === tour.id ? (
+                    <Spinner />
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => void handleOutcome(tour.id, 'completed')}
+                        className="rounded px-2 py-1 text-xs font-medium text-teal-600 hover:bg-teal-50"
+                      >
+                        Completed
+                      </button>
+                      <button
+                        onClick={() => void handleOutcome(tour.id, 'no_show')}
+                        className="rounded px-2 py-1 text-xs font-medium text-zinc-500 hover:bg-zinc-100"
+                      >
+                        No-show
+                      </button>
+                      <button
+                        onClick={() => void handleOutcome(tour.id, 'cancelled')}
+                        className="rounded px-2 py-1 text-xs font-medium text-zinc-500 hover:bg-zinc-100"
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 // ─── Prospect Detail Panel ───────────────────────────────────────────────────
 
 function ProspectDetailPanel({
   prospectId,
+  units,
   onTaskUpdated,
 }: {
   prospectId: string;
+  units: Unit[];
   onTaskUpdated: () => void;
 }) {
   const [detail, setDetail] = useState<ProspectDetail | null>(null);
@@ -185,7 +389,7 @@ function ProspectDetailPanel({
 
   if (!detail) return null;
 
-  const { prospect, tasks, activityEvents } = detail;
+  const { prospect, tasks, activityEvents, tours = [] } = detail;
   const openTasks = tasks.filter((t) => t.state === 'open');
   const doneTasks = tasks.filter((t) => t.state === 'done');
 
@@ -211,6 +415,14 @@ function ProspectDetailPanel({
           </div>
         </dl>
       </section>
+
+      {/* Tours */}
+      <ToursSection
+        prospect={prospect}
+        units={units}
+        tours={tours}
+        onChanged={load}
+      />
 
       {/* Open tasks */}
       <section>
@@ -992,7 +1204,7 @@ const App = () => {
                             >
                               {PIPELINE_STATUSES.map((s) => (
                                 <option key={s} value={s}>
-                                  {s.replace(/_/g, ' ')}
+                                  {STATUS_LABELS[s]}
                                 </option>
                               ))}
                             </select>
@@ -1050,6 +1262,7 @@ const App = () => {
                     <ProspectDetailPanel
                       key={`${selectedProspect.id}-${detailRefreshKey}`}
                       prospectId={selectedProspect.id}
+                      units={units}
                       onTaskUpdated={loadTasks}
                     />
                   )}

@@ -2,31 +2,38 @@ import cors from 'cors';
 import express from 'express';
 import {
   CreateProspectRequestSchema,
+  CreateTourRequestSchema,
   CreateUnitRequestSchema,
+  RecordTourOutcomeRequestSchema,
+  UpdateProspectRequestSchema,
   UpdateProspectStatusRequestSchema,
   UpdateTaskStateRequestSchema,
   UpdateUnitRequestSchema,
-  CreateTaskRequestSchema,
-  UpdateProspectRequestSchema
+  CreateTaskRequestSchema
 } from '@hpos/contracts';
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
 import { applyStatusRules } from './rules.js';
 import {
   createProspect,
+  createTask,
+  createTour,
   createUnit,
+  deleteProspect,
+  deleteUnit,
+  DoubleBookingError,
   getProspectDetail,
+  getToursByProspect,
+  listActivityEvents,
   listProspects,
   listTasks,
+  listTours,
   listUnits,
+  recordTourOutcome,
+  updateProspect,
   updateProspectStatus,
   updateTaskState,
-  updateUnit,
-  deleteUnit,
-  deleteProspect,
-  createTask,
-  listActivityEvents,
-  updateProspect
+  updateUnit
 } from './repository.js';
 
 const app = express();
@@ -41,17 +48,17 @@ const asyncRoute =
 
 const routeId = (request: Request): string => {
   const id = request.params.id;
-
-  if (!id) {
-    throw new Error('Route id parameter is required');
-  }
-
+  if (!id) throw new Error('Route id parameter is required');
   return id;
 };
+
+// ─── Health ──────────────────────────────────────────────────────────────────
 
 app.get('/health', (_request, response) => {
   response.json({ ok: true });
 });
+
+// ─── Units ───────────────────────────────────────────────────────────────────
 
 app.get(
   '/units',
@@ -74,15 +81,21 @@ app.patch(
   asyncRoute(async (request, response) => {
     const payload = UpdateUnitRequestSchema.parse(request.body);
     const unit = await updateUnit(routeId(request), payload);
-
-    if (!unit) {
-      response.sendStatus(404);
-      return;
-    }
-
+    if (!unit) { response.sendStatus(404); return; }
     response.json(unit);
   })
 );
+
+app.delete(
+  '/units/:id',
+  asyncRoute(async (request, response) => {
+    const deleted = await deleteUnit(routeId(request));
+    if (!deleted) { response.sendStatus(404); return; }
+    response.sendStatus(204);
+  })
+);
+
+// ─── Prospects ───────────────────────────────────────────────────────────────
 
 app.get(
   '/prospects',
@@ -95,12 +108,7 @@ app.get(
   '/prospects/:id',
   asyncRoute(async (request, response) => {
     const detail = await getProspectDetail(routeId(request));
-
-    if (!detail) {
-      response.sendStatus(404);
-      return;
-    }
-
+    if (!detail) { response.sendStatus(404); return; }
     response.json(detail);
   })
 );
@@ -115,6 +123,16 @@ app.post(
 );
 
 app.patch(
+  '/prospects/:id',
+  asyncRoute(async (request, response) => {
+    const payload = UpdateProspectRequestSchema.parse(request.body);
+    const prospect = await updateProspect(routeId(request), payload);
+    if (!prospect) { response.sendStatus(404); return; }
+    response.json(prospect);
+  })
+);
+
+app.patch(
   '/prospects/:id/status',
   asyncRoute(async (request, response) => {
     const payload = UpdateProspectStatusRequestSchema.parse(request.body);
@@ -122,22 +140,85 @@ app.patch(
       routeId(request),
       payload.status,
       (prospect, openTasks, units) =>
-        applyStatusRules(payload.status, {
-          prospect,
-          units,
-          openTasks,
-          now: new Date()
-        })
+        applyStatusRules(payload.status, { prospect, units, openTasks, now: new Date() })
     );
-
-    if (!result) {
-      response.sendStatus(404);
-      return;
-    }
-
+    if (!result) { response.sendStatus(404); return; }
     response.json(result);
   })
 );
+
+app.delete(
+  '/prospects/:id',
+  asyncRoute(async (request, response) => {
+    const deleted = await deleteProspect(routeId(request));
+    if (!deleted) { response.sendStatus(404); return; }
+    response.sendStatus(204);
+  })
+);
+
+// ─── Tours ───────────────────────────────────────────────────────────────────
+
+app.get(
+  '/tours',
+  asyncRoute(async (_request, response) => {
+    response.json(await listTours());
+  })
+);
+
+app.get(
+  '/prospects/:id/tours',
+  asyncRoute(async (request, response) => {
+    response.json(await getToursByProspect(routeId(request)));
+  })
+);
+
+app.post(
+  '/tours',
+  asyncRoute(async (request, response) => {
+    const payload = CreateTourRequestSchema.parse(request.body);
+    const tour = await createTour(payload);
+
+    // Scheduling a tour transitions the prospect to tour_scheduled, firing the rule engine
+    // with the real tour time so the "Confirm 24h prior" task lands at the right due date.
+    const scheduledAt = new Date(payload.scheduledAt);
+    await updateProspectStatus(
+      payload.prospectId,
+      'tour_scheduled',
+      (prospect, openTasks, units) =>
+        applyStatusRules('tour_scheduled', {
+          prospect,
+          units,
+          openTasks,
+          now: new Date(),
+          tourScheduledAt: scheduledAt
+        })
+    );
+
+    response.status(201).json(tour);
+  })
+);
+
+app.patch(
+  '/tours/:id/outcome',
+  asyncRoute(async (request, response) => {
+    const { outcome } = RecordTourOutcomeRequestSchema.parse(request.body);
+    const tour = await recordTourOutcome(routeId(request), outcome);
+    if (!tour) { response.sendStatus(404); return; }
+
+    // completed → toured, no_show/cancelled → lost
+    const nextStatus = outcome === 'completed' ? 'toured' : 'lost';
+    await updateProspectStatus(
+      tour.prospectId,
+      nextStatus,
+      (prospect, openTasks, units) =>
+        applyStatusRules(nextStatus, { prospect, units, openTasks, now: new Date() })
+    );
+
+    response.json(tour);
+  })
+);
+
+// ─── Tasks ───────────────────────────────────────────────────────────────────
 
 app.get(
   '/tasks',
@@ -146,27 +227,45 @@ app.get(
   })
 );
 
+app.post(
+  '/tasks',
+  asyncRoute(async (request, response) => {
+    const payload = CreateTaskRequestSchema.parse(request.body);
+    const task = await createTask(payload);
+    response.status(201).json(task);
+  })
+);
+
 app.patch(
   '/tasks/:id/state',
   asyncRoute(async (request, response) => {
     const payload = UpdateTaskStateRequestSchema.parse(request.body);
     const task = await updateTaskState(routeId(request), payload.state);
-
-    if (!task) {
-      response.sendStatus(404);
-      return;
-    }
-
+    if (!task) { response.sendStatus(404); return; }
     response.json(task);
   })
 );
+
+// ─── Activity ─────────────────────────────────────────────────────────────────
+
+app.get(
+  '/activity',
+  asyncRoute(async (_request, response) => {
+    response.json(await listActivityEvents());
+  })
+);
+
+// ─── Error handler ───────────────────────────────────────────────────────────
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => {
   if (error instanceof ZodError) {
     response.status(400).json({ error: 'Invalid request body', issues: error.issues });
     return;
   }
-
+  if (error instanceof DoubleBookingError) {
+    response.status(409).json({ error: error.message });
+    return;
+  }
   console.error(error);
   response.status(500).json({ error: 'Internal server error' });
 });
@@ -175,155 +274,3 @@ const port = Number(process.env.PORT ?? 4000);
 app.listen(port, () => {
   console.log(`Leasing CRM API listening on http://localhost:${port}`);
 });
-
-// ─── Paste these routes into apps/backend/src/server.ts ─────────────────────
-// Add these to the import from './repository.js':
-//   deleteUnit, deleteProspect, createTask, listActivityEvents
-
-// ─── Additional imports needed at the top of server.ts ───────────────────────
-
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UNITS — delete
-// ─────────────────────────────────────────────────────────────────────────────
-
-app.delete(
-  '/units/:id',
-  asyncRoute(async (request, response) => {
-    const deleted = await deleteUnit(routeId(request));
-    if (!deleted) {
-      response.sendStatus(404);
-      return;
-    }
-    response.sendStatus(204);
-  })
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PROSPECTS — delete + update (full patch, not just status)
-// ─────────────────────────────────────────────────────────────────────────────
-
-app.delete(
-  '/prospects/:id',
-  asyncRoute(async (request, response) => {
-    const deleted = await deleteProspect(routeId(request));
-    if (!deleted) {
-      response.sendStatus(404);
-      return;
-    }
-    response.sendStatus(204);
-  })
-);
-
-app.post(
-  '/tasks',
-  asyncRoute(async (request, response) => {
-    // Inline validation until CreateTaskRequestSchema is wired through contracts:
-    const { title, dueDate, assignee, prospectId } = request.body as {
-      title: string;
-      dueDate: string;
-      assignee: string;
-      prospectId: string;
-    };
-    const task = await createTask({ title, dueDate, assignee, prospectId });
-    response.status(201).json(task);
-  })
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ACTIVITY — global feed
-// ─────────────────────────────────────────────────────────────────────────────
-
-app.get(
-  '/activity',
-  asyncRoute(async (_request, response) => {
-    response.json(await listActivityEvents());
-  })
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UNITS — delete
-// ─────────────────────────────────────────────────────────────────────────────
-
-app.delete(
-  '/units/:id',
-  asyncRoute(async (request, response) => {
-    const deleted = await deleteUnit(routeId(request));
-    if (!deleted) {
-      response.sendStatus(404);
-      return;
-    }
-    response.sendStatus(204);
-  })
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// PROSPECTS — full update (name, contact, assignee, assignedUnitId)
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Add updateProspect to repository imports and implementation (see below).
-// Add UpdateProspectRequestSchema to the import from '@hpos/contracts'.
-
-app.patch(
-  '/prospects/:id',
-  asyncRoute(async (request, response) => {
-    const payload = UpdateProspectRequestSchema.parse(request.body);
-    const prospect = await updateProspect(routeId(request), payload);
-
-    if (!prospect) {
-      response.sendStatus(404);
-      return;
-    }
-
-    response.json(prospect);
-  })
-);
-
-app.delete(
-  '/prospects/:id',
-  asyncRoute(async (request, response) => {
-    const deleted = await deleteProspect(routeId(request));
-    if (!deleted) {
-      response.sendStatus(404);
-      return;
-    }
-    response.sendStatus(204);
-  })
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TASKS — create + list already present; add create endpoint
-// ─────────────────────────────────────────────────────────────────────────────
-
-// Add CreateTaskRequestSchema to @hpos/contracts/src/leasing-crm.ts:
-//
-//   export const CreateTaskRequestSchema = TaskSchema.omit({ id: true, state: true });
-//   export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;
-//
-// Then export it from packages/contracts/src/index.ts.
-
-app.post(
-  '/tasks',
-  asyncRoute(async (request, response) => {
-    // Inline validation until CreateTaskRequestSchema is wired through contracts:
-    const { title, dueDate, assignee, prospectId } = request.body as {
-      title: string;
-      dueDate: string;
-      assignee: string;
-      prospectId: string;
-    };
-    const task = await createTask({ title, dueDate, assignee, prospectId });
-    response.status(201).json(task);
-  })
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ACTIVITY — global feed
-// ─────────────────────────────────────────────────────────────────────────────
-
-app.get(
-  '/activity',
-  asyncRoute(async (_request, response) => {
-    response.json(await listActivityEvents());
-  })
-);

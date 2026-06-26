@@ -5,6 +5,7 @@ type AutomationContext = {
   units: Unit[];
   openTasks: Task[];
   now: Date;
+  tourScheduledAt?: Date;
 };
 
 export type AutomationResult = {
@@ -57,15 +58,18 @@ export const statusRules: StatusRule[] = [
     })
   },
   {
-    // Tier 2 will supply a real tour time via the Tours entity.
-    // Until then we default to +1 day so the task is always meaningful.
     status: 'tour_scheduled',
-    apply: ({ prospect, now }) => ({
-      ...emptyResult(),
-      tasksToCreate: [
-        createFollowUpTask(prospect, `Confirm tour 24h prior for ${prospect.name}`, addDays(now, 1))
-      ]
-    })
+    apply: ({ prospect, now, tourScheduledAt }) => {
+      const oneDayBefore = tourScheduledAt
+        ? new Date(tourScheduledAt.getTime() - 24 * 60 * 60 * 1000).toISOString()
+        : addDays(now, 1);
+      return {
+        ...emptyResult(),
+        tasksToCreate: [
+          createFollowUpTask(prospect, `Confirm tour 24h prior for ${prospect.name}`, oneDayBefore)
+        ]
+      };
+    }
   },
   {
     status: 'toured',
