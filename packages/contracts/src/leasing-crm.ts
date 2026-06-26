@@ -42,7 +42,8 @@ export const ProspectSchema = z.object({
   contact: ContactInfoSchema,
   assignedUnitId: IdSchema.nullable(),
   status: PipelineStatusSchema,
-  assignee: z.string().min(1)
+  assignee: z.string().min(1),
+  nextTourAt: IsoDateTimeSchema.nullable().optional()
 });
 
 export const TourSchema = z.object({

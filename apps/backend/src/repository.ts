@@ -38,6 +38,7 @@ type ProspectRow = QueryResultRow & {
   assigned_unit_id: string | null;
   status: Prospect['status'];
   assignee: string;
+  next_tour_at?: Date | null;
 };
 
 type TaskRow = QueryResultRow & {
@@ -80,6 +81,7 @@ const toProspect = (row: ProspectRow): Prospect => ({
     phone: row.phone
   },
   assignedUnitId: row.assigned_unit_id,
+  ...(row.next_tour_at !== undefined && { nextTourAt: row.next_tour_at?.toISOString() ?? null }),
   status: row.status,
   assignee: row.assignee
 });
@@ -176,7 +178,10 @@ export const listProspects = async (filter: ProspectFilter = {}): Promise<Prospe
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await pool.query<ProspectRow>(
-    `SELECT id, name, email, phone, assigned_unit_id, status, assignee FROM prospects ${where} ORDER BY name`,
+    `SELECT p.id, p.name, p.email, p.phone, p.assigned_unit_id, p.status, p.assignee,
+            (SELECT MIN(t.scheduled_at) FROM tours t
+             WHERE t.prospect_id = p.id AND t.outcome IS NULL) AS next_tour_at
+     FROM prospects p ${where} ORDER BY p.name`,
     values
   );
   return result.rows.map(toProspect);

@@ -651,6 +651,30 @@ function UnitsPanel({
         </div>
       </div>
 
+      {showForm && (
+        <div className="border-b border-zinc-200 bg-zinc-50 px-4 py-4">
+          {formError && (
+            <p className="mb-2 text-xs text-red-600">{formError}</p>
+          )}
+          <div className="flex gap-2">
+            <input
+              className="h-9 flex-1 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+              placeholder="Unit 101"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleCreate(); }}
+            />
+            <button
+              onClick={() => void handleCreate()}
+              disabled={submitting}
+              className="inline-flex h-9 items-center gap-1 rounded-md bg-teal-600 px-3 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+            >
+              {submitting ? <Spinner /> : 'Add'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {units.length === 0 && !loading ? (
         <EmptyState message="No units yet" />
       ) : (
@@ -694,29 +718,6 @@ function UnitsPanel({
         </ul>
       )}
 
-      {showForm && (
-        <div className="border-t border-zinc-200 bg-zinc-50 px-4 py-4">
-          {formError && (
-            <p className="mb-2 text-xs text-red-600">{formError}</p>
-          )}
-          <div className="flex gap-2">
-            <input
-              className="h-9 flex-1 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
-              placeholder="Unit 101"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') void handleCreate(); }}
-            />
-            <button
-              onClick={() => void handleCreate()}
-              disabled={submitting}
-              className="inline-flex h-9 items-center gap-1 rounded-md bg-teal-600 px-3 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
-            >
-              {submitting ? <Spinner /> : 'Add'}
-            </button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1119,6 +1120,9 @@ const App = () => {
   const [editingProspectId,  setEditingProspectId]  = useState<string | null>(null);
   const [updatingStatusId,   setUpdatingStatusId]   = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [sortBy, setSortBy] = useState<'name' | 'tourDate'>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+  const [showSortMenu, setShowSortMenu] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detailRefreshKey, setDetailRefreshKey] = useState(0);
 
@@ -1213,15 +1217,27 @@ const App = () => {
     void loadUnits();
   };
 
-  const visibleProspects = prospects.filter((p) => {
-    if (filter.search) {
-      const q = filter.search.toLowerCase();
-      if (!p.name.toLowerCase().includes(q) && !p.contact.email.toLowerCase().includes(q)) return false;
-    }
-    if (filter.status && p.status !== filter.status) return false;
-    if (filter.unitId && p.assignedUnitId !== filter.unitId) return false;
-    return true;
-  });
+  const visibleProspects = prospects
+    .filter((p) => {
+      if (filter.search) {
+        const q = filter.search.toLowerCase();
+        if (!p.name.toLowerCase().includes(q) && !p.contact.email.toLowerCase().includes(q)) return false;
+      }
+      if (filter.status && p.status !== filter.status) return false;
+      if (filter.unitId && p.assignedUnitId !== filter.unitId) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      let cmp = 0;
+      if (sortBy === 'name') {
+        cmp = a.name.localeCompare(b.name);
+      } else {
+        const aT = a.nextTourAt ? new Date(a.nextTourAt).getTime() : Infinity;
+        const bT = b.nextTourAt ? new Date(b.nextTourAt).getTime() : Infinity;
+        cmp = aT - bT;
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
 
   const selectedProspect = prospects.find((p) => p.id === selectedProspectId);
 
@@ -1318,7 +1334,58 @@ const App = () => {
                     Clear
                   </button>
                 )}
+                <div className="relative ml-auto">
+                  <button
+                    onClick={() => setShowSortMenu((v) => !v)}
+                    className={`h-8 w-8 inline-flex items-center justify-center rounded-md border border-zinc-300 bg-white text-zinc-500 hover:bg-zinc-50 ${showSortMenu ? 'bg-zinc-50 ring-2 ring-teal-500' : ''}`}
+                    title="Sort"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 6h18M7 12h10M11 18h2"/>
+                    </svg>
+                  </button>
+                  {showSortMenu && (
+                    <>
+                      <div className="fixed inset-0 z-10" onClick={() => setShowSortMenu(false)} />
+                      <div className="absolute right-0 top-9 z-20 flex overflow-hidden rounded-md border border-zinc-200 bg-white shadow-md text-xs">
+                        <div className="flex flex-col divide-y divide-zinc-100">
+                          <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">Sort by</p>
+                          {(['name', 'tourDate'] as const).map((opt) => (
+                            <button
+                              key={opt}
+                              onClick={() => setSortBy(opt)}
+                              className={`px-3 py-1.5 text-left transition-colors ${sortBy === opt ? 'font-medium text-teal-700 bg-teal-50' : 'text-zinc-600 hover:bg-zinc-50'}`}
+                            >
+                              {opt === 'name' ? 'Name' : 'Tour date'}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="w-px self-stretch bg-zinc-200" />
+                        <div className="flex flex-col divide-y divide-zinc-100">
+                          <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-400">Direction</p>
+                          {(['asc', 'desc'] as const).map((opt) => (
+                            <button
+                              key={opt}
+                              onClick={() => setSortDir(opt)}
+                              className={`px-3 py-1.5 text-left transition-colors ${sortDir === opt ? 'font-medium text-teal-700 bg-teal-50' : 'text-zinc-600 hover:bg-zinc-50'}`}
+                            >
+                              {opt === 'asc' ? 'Ascending' : 'Descending'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
+
+              {showCreateForm && (
+                <CreateProspectForm
+                  units={units}
+                  onCreated={handleProspectCreated}
+                  onCancel={() => setShowCreateForm(false)}
+                />
+              )}
 
               {visibleProspects.length === 0 && !prospectsLoading ? (
                 <EmptyState message={prospects.length === 0 ? 'No prospects yet' : 'No prospects match your filters'} />
@@ -1381,13 +1448,6 @@ const App = () => {
                 </ul>
               )}
 
-              {showCreateForm && (
-                <CreateProspectForm
-                  units={units}
-                  onCreated={handleProspectCreated}
-                  onCancel={() => setShowCreateForm(false)}
-                />
-              )}
             </div>
 
             {/* Detail panel */}

@@ -1,9 +1,10 @@
-import { readFileSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { pool } from './database.js';
 
-// process.cwd() is always the repo root whether running via tsx or node
-const migrationsDir = join(process.cwd(), 'db/init');
+// dev: cwd = apps/backend (npm workspace); prod: cwd = repo root
+const candidates = [join(process.cwd(), 'db/init'), join(process.cwd(), '../../db/init')];
+const migrationsDir: string = candidates.find((d) => existsSync(d)) ?? candidates[0]!
 
 export const migrate = async (): Promise<void> => {
   const client = await pool.connect();
