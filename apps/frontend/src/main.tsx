@@ -126,6 +126,12 @@ const patchTourOutcome = (tourId: string, outcome: TourOutcome) =>
     body: JSON.stringify({ outcome }),
   });
 
+const patchTourSchedule = (tourId: string, scheduledAt: string) =>
+  apiFetch<Tour>(`/tours/${tourId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ scheduledAt }),
+  });
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const PIPELINE_STATUSES: PipelineStatus[] = [
@@ -210,6 +216,9 @@ function ToursSection({
   const [scheduledAt, setScheduledAt] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [recordingId, setRecordingId] = useState<string | null>(null);
+  const [reschedulingId, setReschedulingId] = useState<string | null>(null);
+  const [rescheduleAt, setRescheduleAt] = useState('');
+  const [rescheduleError, setRescheduleError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   const availableUnits = units.filter(
@@ -240,6 +249,24 @@ function ToursSection({
     try {
       await patchTourOutcome(tourId, outcome);
       onChanged();
+    } finally {
+      setRecordingId(null);
+    }
+  };
+
+  const handleReschedule = async (tourId: string) => {
+    setRescheduleError(null);
+    if (!rescheduleAt) { setRescheduleError('Pick a new date and time.'); return; }
+    setRecordingId(tourId);
+    try {
+      await patchTourSchedule(tourId, new Date(rescheduleAt).toISOString());
+      setReschedulingId(null);
+      setRescheduleAt('');
+      onChanged();
+    } catch (err) {
+      console.error('Reschedule error:', err);
+      const msg = err instanceof Error ? err.message : '';
+      setRescheduleError(msg.includes('409') ? 'That unit is already booked within 1 hour of this time.' : 'Failed to reschedule.');
     } finally {
       setRecordingId(null);
     }
@@ -305,46 +332,81 @@ function ToursSection({
           {tours.map((tour) => (
             <li
               key={tour.id}
-              className="flex items-start justify-between gap-3 rounded-md border border-zinc-200 bg-white px-3 py-2.5"
+              className="flex flex-col gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2.5"
             >
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-zinc-800">
-                  {new Date(tour.scheduledAt).toLocaleString()}
-                </p>
-                <p className="text-xs text-zinc-400">Unit: {units.find((u) => u.id === tour.unitId)?.name ?? tour.unitId}</p>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-zinc-800">
+                    {new Date(tour.scheduledAt).toLocaleString()}
+                  </p>
+                  <p className="text-xs text-zinc-400">Unit: {units.find((u) => u.id === tour.unitId)?.name ?? tour.unitId}</p>
+                </div>
+                {tour.outcome ? (
+                  <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                    tour.outcome === 'completed' ? 'bg-teal-100 text-teal-700' : 'bg-zinc-100 text-zinc-500'
+                  }`}>
+                    {OUTCOME_LABELS[tour.outcome]}
+                  </span>
+                ) : (
+                  <div className="flex shrink-0 items-center gap-1">
+                    {recordingId === tour.id ? (
+                      <Spinner />
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => void handleOutcome(tour.id, 'completed')}
+                          className="rounded px-2 py-1 text-xs font-medium text-teal-600 hover:bg-teal-50"
+                        >
+                          Completed
+                        </button>
+                        <button
+                          onClick={() => void handleOutcome(tour.id, 'no_show')}
+                          className="rounded px-2 py-1 text-xs font-medium text-zinc-500 hover:bg-zinc-100"
+                        >
+                          No-show
+                        </button>
+                        <button
+                          onClick={() => void handleOutcome(tour.id, 'cancelled')}
+                          className="rounded px-2 py-1 text-xs font-medium text-zinc-500 hover:bg-zinc-100"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => {
+                            setReschedulingId(reschedulingId === tour.id ? null : tour.id);
+                            setRescheduleAt('');
+                            setRescheduleError(null);
+                          }}
+                          className="rounded px-2 py-1 text-xs font-medium text-violet-600 hover:bg-violet-50"
+                        >
+                          {reschedulingId === tour.id ? 'Close' : 'Reschedule'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
-              {tour.outcome ? (
-                <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                  tour.outcome === 'completed' ? 'bg-teal-100 text-teal-700' : 'bg-zinc-100 text-zinc-500'
-                }`}>
-                  {OUTCOME_LABELS[tour.outcome]}
-                </span>
-              ) : (
-                <div className="flex shrink-0 items-center gap-1">
-                  {recordingId === tour.id ? (
-                    <Spinner />
-                  ) : (
-                    <>
-                      <button
-                        onClick={() => void handleOutcome(tour.id, 'completed')}
-                        className="rounded px-2 py-1 text-xs font-medium text-teal-600 hover:bg-teal-50"
-                      >
-                        Completed
-                      </button>
-                      <button
-                        onClick={() => void handleOutcome(tour.id, 'no_show')}
-                        className="rounded px-2 py-1 text-xs font-medium text-zinc-500 hover:bg-zinc-100"
-                      >
-                        No-show
-                      </button>
-                      <button
-                        onClick={() => void handleOutcome(tour.id, 'cancelled')}
-                        className="rounded px-2 py-1 text-xs font-medium text-zinc-500 hover:bg-zinc-100"
-                      >
-                        Cancel
-                      </button>
-                    </>
+
+              {reschedulingId === tour.id && (
+                <div className="flex flex-col gap-2 border-t border-zinc-100 pt-2">
+                  {rescheduleError && (
+                    <p className="text-xs text-red-600">{rescheduleError}</p>
                   )}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="datetime-local"
+                      className="h-8 flex-1 rounded-md border border-zinc-300 bg-white px-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                      value={rescheduleAt}
+                      onChange={(e) => setRescheduleAt(e.target.value)}
+                    />
+                    <button
+                      onClick={() => void handleReschedule(tour.id)}
+                      disabled={recordingId === tour.id}
+                      className="inline-flex h-8 items-center gap-1 rounded-md bg-violet-600 px-3 text-xs font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+                    >
+                      {recordingId === tour.id ? <Spinner /> : 'Confirm'}
+                    </button>
+                  </div>
                 </div>
               )}
             </li>

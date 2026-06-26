@@ -105,6 +105,10 @@ export const RecordTourOutcomeRequestSchema = z.object({
   outcome: TourOutcomeSchema
 });
 
+export const RescheduleTourRequestSchema = z.object({
+  scheduledAt: IsoDateTimeSchema
+});
+
 export const UpdateTaskStateRequestSchema = z.object({
   state: TaskStateSchema
 });
@@ -130,5 +134,6 @@ export type ProspectFilter = z.infer<typeof ProspectFilterSchema>;
 export type UpdateProspectStatusRequest = z.infer<typeof UpdateProspectStatusRequestSchema>;
 export type CreateTourRequest = z.infer<typeof CreateTourRequestSchema>;
 export type RecordTourOutcomeRequest = z.infer<typeof RecordTourOutcomeRequestSchema>;
+export type RescheduleTourRequest = z.infer<typeof RescheduleTourRequestSchema>;
 export type UpdateTaskStateRequest = z.infer<typeof UpdateTaskStateRequestSchema>;
 export type CreateTaskRequest = z.infer<typeof CreateTaskRequestSchema>;

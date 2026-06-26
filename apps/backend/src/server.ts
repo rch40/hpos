@@ -9,6 +9,7 @@ import {
   CreateUnitRequestSchema,
   ProspectFilterSchema,
   RecordTourOutcomeRequestSchema,
+  RescheduleTourRequestSchema,
   UpdateProspectRequestSchema,
   UpdateProspectStatusRequestSchema,
   UpdateTaskStateRequestSchema,
@@ -34,6 +35,7 @@ import {
   listTours,
   listUnits,
   recordTourOutcome,
+  rescheduleTour,
   updateProspect,
   updateProspectStatus,
   updateTaskState,
@@ -219,6 +221,16 @@ app.patch(
         applyStatusRules(nextStatus, { prospect, units, openTasks, now: new Date() })
     );
 
+    response.json(tour);
+  })
+);
+
+app.patch(
+  '/tours/:id',
+  asyncRoute(async (request, response) => {
+    const { scheduledAt } = RescheduleTourRequestSchema.parse(request.body);
+    const tour = await rescheduleTour(routeId(request), scheduledAt);
+    if (!tour) { response.sendStatus(404); return; }
     response.json(tour);
   })
 );

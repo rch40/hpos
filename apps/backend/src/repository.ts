@@ -473,6 +473,52 @@ export const createTour = async (payload: CreateTourRequest): Promise<Tour> => {
   }
 };
 
+export const rescheduleTour = async (
+  id: string,
+  scheduledAt: string
+): Promise<Tour | undefined> => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const existing = await client.query<TourRow>(
+      'SELECT id, prospect_id, unit_id, scheduled_at, outcome FROM tours WHERE id = $1 FOR UPDATE',
+      [id]
+    );
+    const tour = existing.rows[0];
+    if (!tour) { await client.query('ROLLBACK'); return undefined; }
+
+    // Double-booking guard (exclude this tour from the check)
+    const conflict = await client.query<{ id: string }>(
+      `SELECT id FROM tours
+       WHERE unit_id = $1
+         AND id != $2
+         AND outcome IS DISTINCT FROM 'cancelled'
+         AND ABS(EXTRACT(EPOCH FROM (scheduled_at - $3::timestamptz))) < 3600
+       FOR UPDATE`,
+      [tour.unit_id, id, scheduledAt]
+    );
+    if ((conflict.rowCount ?? 0) > 0) {
+      await client.query('ROLLBACK');
+      throw new DoubleBookingError();
+    }
+
+    const result = await client.query<TourRow>(
+      `UPDATE tours SET scheduled_at = $2
+       WHERE id = $1
+       RETURNING id, prospect_id, unit_id, scheduled_at, outcome`,
+      [id, scheduledAt]
+    );
+    await client.query('COMMIT');
+    return toTour(requireRow(result.rows[0], 'tours'));
+  } catch (error) {
+    if (!(error instanceof DoubleBookingError)) await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 export const recordTourOutcome = async (
   id: string,
   outcome: TourOutcome
