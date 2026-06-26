@@ -7,6 +7,7 @@ import {
   CreateProspectRequestSchema,
   CreateTourRequestSchema,
   CreateUnitRequestSchema,
+  ProspectFilterSchema,
   RecordTourOutcomeRequestSchema,
   UpdateProspectRequestSchema,
   UpdateProspectStatusRequestSchema,
@@ -102,8 +103,9 @@ app.delete(
 
 app.get(
   '/prospects',
-  asyncRoute(async (_request, response) => {
-    response.json(await listProspects());
+  asyncRoute(async (request, response) => {
+    const filter = ProspectFilterSchema.parse(request.query);
+    response.json(await listProspects(filter));
   })
 );
 

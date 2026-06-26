@@ -85,6 +85,13 @@ export const CreateProspectRequestSchema = ProspectSchema.omit({
 
 export const UpdateProspectRequestSchema = ProspectSchema.omit({ id: true }).partial();
 
+export const ProspectFilterSchema = z.object({
+  search: z.string().optional(),
+  status: PipelineStatusSchema.optional(),
+  unitId: IdSchema.optional(),
+  assignee: z.string().optional(),
+});
+
 export const UpdateProspectStatusRequestSchema = z.object({
   status: PipelineStatusSchema
 });
@@ -119,6 +126,7 @@ export type CreateUnitRequest = z.infer<typeof CreateUnitRequestSchema>;
 export type UpdateUnitRequest = z.infer<typeof UpdateUnitRequestSchema>;
 export type CreateProspectRequest = z.infer<typeof CreateProspectRequestSchema>;
 export type UpdateProspectRequest = z.infer<typeof UpdateProspectRequestSchema>;
+export type ProspectFilter = z.infer<typeof ProspectFilterSchema>;
 export type UpdateProspectStatusRequest = z.infer<typeof UpdateProspectStatusRequestSchema>;
 export type CreateTourRequest = z.infer<typeof CreateTourRequestSchema>;
 export type RecordTourOutcomeRequest = z.infer<typeof RecordTourOutcomeRequestSchema>;

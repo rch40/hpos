@@ -4,6 +4,7 @@ import type {
   CreateTourRequest,
   CreateUnitRequest,
   Prospect,
+  ProspectFilter,
   Task,
   Tour,
   TourOutcome,
@@ -152,9 +153,31 @@ export const updateUnit = async (
   return toUnit(requireRow(result.rows[0], 'units'));
 };
 
-export const listProspects = async (): Promise<Prospect[]> => {
+export const listProspects = async (filter: ProspectFilter = {}): Promise<Prospect[]> => {
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+
+  if (filter.search) {
+    values.push(`%${filter.search.toLowerCase()}%`);
+    conditions.push(`(LOWER(name) LIKE $${values.length} OR LOWER(email) LIKE $${values.length})`);
+  }
+  if (filter.status) {
+    values.push(filter.status);
+    conditions.push(`status = $${values.length}`);
+  }
+  if (filter.unitId) {
+    values.push(filter.unitId);
+    conditions.push(`assigned_unit_id = $${values.length}`);
+  }
+  if (filter.assignee) {
+    values.push(`%${filter.assignee.toLowerCase()}%`);
+    conditions.push(`LOWER(assignee) LIKE $${values.length}`);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await pool.query<ProspectRow>(
-    'SELECT id, name, email, phone, assigned_unit_id, status, assignee FROM prospects ORDER BY name'
+    `SELECT id, name, email, phone, assigned_unit_id, status, assignee FROM prospects ${where} ORDER BY name`,
+    values
   );
   return result.rows.map(toProspect);
 };

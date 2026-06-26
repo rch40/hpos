@@ -23,10 +23,26 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
-const fetchProspects = () => apiFetch<Prospect[]>('/prospects');
+type ProspectFilter = {
+  search?: string;
+  status?: PipelineStatus;
+  unitId?: string;
+  assignee?: string;
+};
+
+const fetchProspects = (filter: ProspectFilter = {}) => {
+  const params = new URLSearchParams();
+  if (filter.search)   params.set('search', filter.search);
+  if (filter.status)   params.set('status', filter.status);
+  if (filter.unitId)   params.set('unitId', filter.unitId);
+  if (filter.assignee) params.set('assignee', filter.assignee);
+  const qs = params.toString();
+  return apiFetch<Prospect[]>(`/prospects${qs ? `?${qs}` : ''}`);
+};
 const fetchTasks    = () => apiFetch<Task[]>('/tasks');
 const fetchUnits    = () => apiFetch<Unit[]>('/units');
 
@@ -528,6 +544,7 @@ function UnitsPanel({
   const [newName, setNewName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   const handleCreate = async () => {
@@ -550,6 +567,7 @@ function UnitsPanel({
     setDeletingId(id);
     try {
       await deleteUnit(id);
+      setConfirmDeleteId(null);
       onUnitsChanged();
     } finally {
       setDeletingId(null);
@@ -583,14 +601,32 @@ function UnitsPanel({
               <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${UNIT_STATUS_COLORS[unit.status]}`}>
                 {unit.status}
               </span>
-              <button
-                onClick={() => void handleDelete(unit.id)}
-                disabled={deletingId === unit.id}
-                className="text-xs text-zinc-400 hover:text-red-500 disabled:opacity-40"
-                title="Delete unit"
-              >
-                {deletingId === unit.id ? <Spinner /> : '✕'}
-              </button>
+              {confirmDeleteId === unit.id ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-zinc-500">Delete?</span>
+                  <button
+                    onClick={() => void handleDelete(unit.id)}
+                    disabled={deletingId === unit.id}
+                    className="text-xs font-medium text-red-600 hover:underline disabled:opacity-50"
+                  >
+                    {deletingId === unit.id ? <Spinner /> : 'Yes'}
+                  </button>
+                  <button
+                    onClick={() => setConfirmDeleteId(null)}
+                    className="text-xs text-zinc-400 hover:text-zinc-600"
+                  >
+                    No
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmDeleteId(unit.id)}
+                  className="text-xs text-zinc-400 hover:text-red-500"
+                  title="Delete unit"
+                >
+                  ✕
+                </button>
+              )}
             </li>
           ))}
         </ul>
@@ -1016,6 +1052,7 @@ const App = () => {
   const [prospectsLoading, setProspectsLoading] = useState(true);
   const [tasksLoading,     setTasksLoading]     = useState(true);
   const [unitsLoading,     setUnitsLoading]     = useState(true);
+  const [filter, setFilter] = useState<ProspectFilter>({});
   const [selectedProspectId, setSelectedProspectId] = useState<string | null>(null);
   const [editingProspectId,  setEditingProspectId]  = useState<string | null>(null);
   const [updatingStatusId,   setUpdatingStatusId]   = useState<string | null>(null);
@@ -1057,6 +1094,8 @@ const App = () => {
     void loadTasks();
     void loadUnits();
   }, [loadProspects, loadTasks, loadUnits]);
+
+  const applyFilter = (next: ProspectFilter) => setFilter(next);
 
   const handleStatusChange = async (
     prospectId: string,
@@ -1112,6 +1151,16 @@ const App = () => {
     void loadUnits();
   };
 
+  const visibleProspects = prospects.filter((p) => {
+    if (filter.search) {
+      const q = filter.search.toLowerCase();
+      if (!p.name.toLowerCase().includes(q) && !p.contact.email.toLowerCase().includes(q)) return false;
+    }
+    if (filter.status && p.status !== filter.status) return false;
+    if (filter.unitId && p.assignedUnitId !== filter.unitId) return false;
+    return true;
+  });
+
   const selectedProspect = prospects.find((p) => p.id === selectedProspectId);
 
   return (
@@ -1155,11 +1204,65 @@ const App = () => {
                 </div>
               </div>
 
-              {prospects.length === 0 && !prospectsLoading ? (
-                <EmptyState message="No prospects yet" />
+              {/* Search + filter bar */}
+              <div className="flex flex-wrap gap-2 border-b border-zinc-200 px-4 py-3">
+                <input
+                  type="search"
+                  placeholder="Search name or email…"
+                  className="h-8 flex-1 min-w-[160px] rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  value={filter.search ?? ''}
+                  onChange={(e) => {
+                    const next: ProspectFilter = { ...filter };
+                    const v = e.target.value;
+                    if (v) { next.search = v; } else { delete next.search; }
+                    applyFilter(next);
+                  }}
+                />
+                <select
+                  className="h-8 rounded-md border border-zinc-300 bg-white px-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  value={filter.status ?? ''}
+                  onChange={(e) => {
+                    const next: ProspectFilter = { ...filter };
+                    const v = e.target.value as PipelineStatus;
+                    if (v) { next.status = v; } else { delete next.status; }
+                    applyFilter(next);
+                  }}
+                >
+                  <option value="">All statuses</option>
+                  {PIPELINE_STATUSES.map((s) => (
+                    <option key={s} value={s}>{STATUS_LABELS[s]}</option>
+                  ))}
+                </select>
+                <select
+                  className="h-8 rounded-md border border-zinc-300 bg-white px-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                  value={filter.unitId ?? ''}
+                  onChange={(e) => {
+                    const next: ProspectFilter = { ...filter };
+                    const v = e.target.value;
+                    if (v) { next.unitId = v; } else { delete next.unitId; }
+                    applyFilter(next);
+                  }}
+                >
+                  <option value="">All units</option>
+                  {units.map((u) => (
+                    <option key={u.id} value={u.id}>{u.name}</option>
+                  ))}
+                </select>
+                {(filter.search || filter.status || filter.unitId) && (
+                  <button
+                    onClick={() => setFilter({})}
+                    className="h-8 rounded-md px-2 text-xs text-zinc-400 hover:text-zinc-700"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {visibleProspects.length === 0 && !prospectsLoading ? (
+                <EmptyState message={prospects.length === 0 ? 'No prospects yet' : 'No prospects match your filters'} />
               ) : (
                 <ul className="divide-y divide-zinc-100">
-                  {prospects.map((prospect) => (
+                  {visibleProspects.map((prospect) => (
                     <li key={prospect.id}>
                       <article
                         className={`grid cursor-pointer gap-3 px-4 py-4 transition-colors sm:grid-cols-[1fr_auto] ${
