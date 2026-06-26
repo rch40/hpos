@@ -10,7 +10,7 @@
     "typecheck": "npm run typecheck --workspaces",
     "build:backend": "npm run build -w packages/contracts && npm run build -w apps/backend",
     "build:frontend": "npm run build -w packages/contracts && npm run build -w apps/frontend",
-    "start:backend": "node apps/backend/dist/server.js",
+    "start:backend": "node apps/backend/dist/apps/backend/src/server.js",
     "db:up": "docker compose up -d db",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f db",

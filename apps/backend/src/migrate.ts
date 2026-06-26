@@ -1,9 +1,9 @@
 import { readFileSync, readdirSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
+import { join } from 'path';
 import { pool } from './database.js';
 
-const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), '../../../db/init');
+// process.cwd() is always the repo root whether running via tsx or node
+const migrationsDir = join(process.cwd(), 'db/init');
 
 export const migrate = async (): Promise<void> => {
   const client = await pool.connect();
@@ -15,12 +15,33 @@ export const migrate = async (): Promise<void> => {
       )
     `);
 
-    const { rows } = await client.query<{ name: string }>('SELECT name FROM _migrations');
-    const applied = new Set(rows.map((r) => r.name));
-
     const files = readdirSync(migrationsDir)
       .filter((f) => f.endsWith('.sql'))
       .sort();
+
+    const { rows } = await client.query<{ name: string }>('SELECT name FROM _migrations');
+    const applied = new Set(rows.map((r) => r.name));
+
+    // If _migrations is empty but the schema already exists (e.g. seeded by Docker init scripts),
+    // record all migration files as applied without re-running them.
+    if (applied.size === 0) {
+      const { rows: tableCheck } = await client.query<{ exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM information_schema.tables
+           WHERE table_schema = 'public' AND table_name = 'units'
+         ) AS exists`
+      );
+      if (tableCheck[0]?.exists) {
+        console.log('Schema already exists — seeding migration history.');
+        for (const file of files) {
+          await client.query(
+            'INSERT INTO _migrations (name) VALUES ($1) ON CONFLICT DO NOTHING',
+            [file]
+          );
+        }
+        return;
+      }
+    }
 
     for (const file of files) {
       if (applied.has(file)) continue;
