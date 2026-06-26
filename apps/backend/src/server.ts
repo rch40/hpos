@@ -1,5 +1,7 @@
 import cors from 'cors';
 import express from 'express';
+import { existsSync } from 'fs';
+import { join } from 'path';
 import { migrate } from './migrate.js';
 import {
   CreateProspectRequestSchema,
@@ -255,6 +257,14 @@ app.get(
     response.json(await listActivityEvents());
   })
 );
+
+// ─── Frontend (production) ────────────────────────────────────────────────────
+
+const frontendDist = join(process.cwd(), 'apps/frontend/dist');
+if (existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+  app.get('*', (_req, res) => res.sendFile(join(frontendDist, 'index.html')));
+}
 
 // ─── Error handler ───────────────────────────────────────────────────────────
 
