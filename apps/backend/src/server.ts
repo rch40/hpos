@@ -1,5 +1,6 @@
 import cors from 'cors';
 import express from 'express';
+import { migrate } from './migrate.js';
 import {
   CreateProspectRequestSchema,
   CreateTourRequestSchema,
@@ -271,6 +272,14 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
 });
 
 const port = Number(process.env.PORT ?? 4000);
-app.listen(port, () => {
-  console.log(`Leasing CRM API listening on http://localhost:${port}`);
-});
+
+migrate()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`Leasing CRM API listening on http://localhost:${port}`);
+    });
+  })
+  .catch((err) => {
+    console.error('Migration failed, aborting startup:', err);
+    process.exit(1);
+  });
