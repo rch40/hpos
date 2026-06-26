@@ -11,6 +11,11 @@ import type {
   Unit,
   UnitStatus,
 } from '@hpos/contracts';
+import {
+  CreateProspectRequestSchema,
+  CreateUnitRequestSchema,
+  CreateTourRequestSchema,
+} from '@hpos/contracts';
 import './styles.css';
 
 const API = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:4000' : '');
@@ -192,6 +197,17 @@ const EmptyState = ({ message }: { message: string }) => (
   <p className="px-4 py-6 text-center text-sm text-zinc-400">{message}</p>
 );
 
+const ProspectSkeletonRow = () => (
+  <li className="grid gap-3 px-4 py-4 sm:grid-cols-[1fr_auto] animate-pulse">
+    <div className="min-w-0 space-y-2">
+      <div className="h-4 w-36 rounded bg-zinc-200" />
+      <div className="h-3 w-48 rounded bg-zinc-100" />
+      <div className="h-5 w-20 rounded-full bg-zinc-100" />
+    </div>
+    <div className="h-10 w-44 rounded-md bg-zinc-100" />
+  </li>
+);
+
 // ─── Tours Section ───────────────────────────────────────────────────────────
 
 const OUTCOME_LABELS: Record<TourOutcome, string> = {
@@ -212,7 +228,7 @@ function ToursSection({
   onChanged: () => void;
 }) {
   const [showForm, setShowForm] = useState(false);
-  const [unitId, setUnitId] = useState('');
+  const [unitId, setUnitId] = useState(prospect.assignedUnitId ?? '');
   const [scheduledAt, setScheduledAt] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [recordingId, setRecordingId] = useState<string | null>(null);
@@ -227,11 +243,22 @@ function ToursSection({
 
   const handleSchedule = async () => {
     setFormError(null);
-    if (!unitId) { setFormError('Select a unit.'); return; }
-    if (!scheduledAt) { setFormError('Pick a date and time.'); return; }
+    const parsed = CreateTourRequestSchema.safeParse({
+      prospectId: prospect.id,
+      unitId: unitId || undefined,
+      scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : '',
+      outcome: null,
+    });
+    if (!parsed.success) {
+      const fmt = parsed.error.format();
+      setFormError(
+        fmt.unitId?._errors[0] ?? fmt.scheduledAt?._errors[0] ?? 'Please fill in all fields.'
+      );
+      return;
+    }
     setSubmitting(true);
     try {
-      await postTour({ prospectId: prospect.id, unitId, scheduledAt: new Date(scheduledAt).toISOString() });
+      await postTour({ prospectId: prospect.id, unitId: parsed.data.unitId, scheduledAt: parsed.data.scheduledAt });
       setShowForm(false);
       setUnitId('');
       setScheduledAt('');
@@ -611,10 +638,14 @@ function UnitsPanel({
 
   const handleCreate = async () => {
     setFormError(null);
-    if (!newName.trim()) { setFormError('Name is required.'); return; }
+    const parsed = CreateUnitRequestSchema.safeParse({ name: newName.trim(), status: 'available' });
+    if (!parsed.success) {
+      setFormError(parsed.error.format().name?._errors[0] ?? 'Invalid input.');
+      return;
+    }
     setSubmitting(true);
     try {
-      await postUnit({ name: newName.trim(), status: 'available' });
+      await postUnit(parsed.data);
       setNewName('');
       setShowForm(false);
       onUnitsChanged();
@@ -918,37 +949,44 @@ function CreateProspectForm({
   const [fields, setFields] = useState(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string | undefined>>({});
 
   const set = (key: keyof typeof EMPTY_FORM) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
       setFields((prev) => ({ ...prev, [key]: e.target.value }));
+      setFieldErrors((prev) => ({ ...prev, [key]: undefined }));
+    };
 
   const handleSubmit = async () => {
     setFormError(null);
-    if (!fields.name.trim() || fields.name.trim().length < 2) {
-      setFormError('Name must be at least 2 characters.');
-      return;
-    }
-    if (!fields.email.includes('@')) {
-      setFormError('Enter a valid email address.');
-      return;
-    }
-    if (fields.phone.replace(/\D/g, '').length < 10) {
-      setFormError('Phone must be at least 10 digits.');
-      return;
-    }
-    if (!fields.assignee.trim()) {
-      setFormError('Assignee is required.');
+    setFieldErrors({});
+
+    const payload = {
+      name: fields.name.trim(),
+      contact: { email: fields.email.trim(), phone: fields.phone.trim() },
+      assignee: fields.assignee.trim(),
+      assignedUnitId: fields.assignedUnitId || null,
+    };
+
+    const parsed = CreateProspectRequestSchema.safeParse(payload);
+    if (!parsed.success) {
+      const fmt = parsed.error.format();
+      setFieldErrors({
+        name: fmt.name?._errors[0],
+        email: fmt.contact?.email?._errors[0],
+        phone: fmt.contact?.phone?._errors[0],
+        assignee: fmt.assignee?._errors[0],
+      });
       return;
     }
 
     setSubmitting(true);
     try {
       const prospect = await postProspect({
-        name: fields.name.trim(),
-        contact: { email: fields.email.trim(), phone: fields.phone.trim() },
-        assignee: fields.assignee.trim(),
-        assignedUnitId: fields.assignedUnitId || null,
+        name: parsed.data.name,
+        contact: parsed.data.contact,
+        assignee: parsed.data.assignee,
+        assignedUnitId: parsed.data.assignedUnitId ?? null,
       });
       onCreated(prospect);
       setFields(EMPTY_FORM);
@@ -971,40 +1009,44 @@ function CreateProspectForm({
         <div className="flex flex-col gap-1">
           <label className="text-xs font-medium text-zinc-500">Full name</label>
           <input
-            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            className={`h-9 rounded-md border px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 ${fieldErrors.name ? 'border-red-400 bg-red-50' : 'border-zinc-300 bg-white'}`}
             placeholder="Jamie Rivera"
             value={fields.name}
             onChange={set('name')}
           />
+          {fieldErrors.name && <p className="text-xs text-red-500">{fieldErrors.name}</p>}
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs font-medium text-zinc-500">Assignee</label>
           <input
-            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            className={`h-9 rounded-md border px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 ${fieldErrors.assignee ? 'border-red-400 bg-red-50' : 'border-zinc-300 bg-white'}`}
             placeholder="Leasing Team"
             value={fields.assignee}
             onChange={set('assignee')}
           />
+          {fieldErrors.assignee && <p className="text-xs text-red-500">{fieldErrors.assignee}</p>}
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs font-medium text-zinc-500">Email</label>
           <input
             type="email"
-            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            className={`h-9 rounded-md border px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 ${fieldErrors.email ? 'border-red-400 bg-red-50' : 'border-zinc-300 bg-white'}`}
             placeholder="jamie@example.com"
             value={fields.email}
             onChange={set('email')}
           />
+          {fieldErrors.email && <p className="text-xs text-red-500">{fieldErrors.email}</p>}
         </div>
         <div className="flex flex-col gap-1">
           <label className="text-xs font-medium text-zinc-500">Phone</label>
           <input
             type="tel"
-            className="h-9 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+            className={`h-9 rounded-md border px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 ${fieldErrors.phone ? 'border-red-400 bg-red-50' : 'border-zinc-300 bg-white'}`}
             placeholder="5551234567"
             value={fields.phone}
             onChange={set('phone')}
           />
+          {fieldErrors.phone && <p className="text-xs text-red-500">{fieldErrors.phone}</p>}
         </div>
         <div className="flex flex-col gap-1 sm:col-span-2">
           <label className="text-xs font-medium text-zinc-500">Assigned unit (optional)</label>
@@ -1118,7 +1160,7 @@ const App = () => {
   const [filter, setFilter] = useState<ProspectFilter>({});
   const [selectedProspectId, setSelectedProspectId] = useState<string | null>(null);
   const [editingProspectId,  setEditingProspectId]  = useState<string | null>(null);
-  const [updatingStatusId,   setUpdatingStatusId]   = useState<string | null>(null);
+  const [revertingStatusId, setRevertingStatusId] = useState<string | null>(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [sortBy, setSortBy] = useState<'name' | 'tourDate'>('name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
@@ -1167,7 +1209,12 @@ const App = () => {
     prospectId: string,
     status: PipelineStatus
   ) => {
-    setUpdatingStatusId(prospectId);
+    const previous = prospects.find((p) => p.id === prospectId);
+    // Optimistically apply the status change immediately
+    setProspects((prev) =>
+      prev.map((p) => (p.id === prospectId ? { ...p, status } : p))
+    );
+    setRevertingStatusId(null);
     try {
       const result = await patchProspectStatus(prospectId, status);
       setProspects((prev) =>
@@ -1178,9 +1225,14 @@ const App = () => {
         setDetailRefreshKey((k) => k + 1);
       }
     } catch {
-      setError('Failed to update status');
-    } finally {
-      setUpdatingStatusId(null);
+      // Revert optimistic update
+      if (previous) {
+        setProspects((prev) =>
+          prev.map((p) => (p.id === prospectId ? previous : p))
+        );
+      }
+      setRevertingStatusId(prospectId);
+      setError('Failed to update status — change reverted.');
     }
   };
 
@@ -1387,7 +1439,11 @@ const App = () => {
                 />
               )}
 
-              {visibleProspects.length === 0 && !prospectsLoading ? (
+              {prospectsLoading && prospects.length === 0 ? (
+                <ul className="divide-y divide-zinc-100">
+                  {[0, 1, 2].map((i) => <ProspectSkeletonRow key={i} />)}
+                </ul>
+              ) : visibleProspects.length === 0 ? (
                 <EmptyState message={prospects.length === 0 ? 'No prospects yet' : 'No prospects match your filters'} />
               ) : (
                 <ul className="divide-y divide-zinc-100">
@@ -1419,28 +1475,20 @@ const App = () => {
                           className="flex items-start"
                           onClick={(e) => e.stopPropagation()}
                         >
-                          {updatingStatusId === prospect.id ? (
-                            <div className="flex h-10 w-44 items-center justify-center">
-                              <Spinner />
-                            </div>
-                          ) : (
-                            <select
-                              className="h-10 rounded-md border border-zinc-300 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
-                              value={prospect.status}
-                              onChange={(e) =>
-                                void handleStatusChange(
-                                  prospect.id,
-                                  e.target.value as PipelineStatus
-                                )
-                              }
-                            >
-                              {PIPELINE_STATUSES.map((s) => (
-                                <option key={s} value={s}>
-                                  {STATUS_LABELS[s]}
-                                </option>
-                              ))}
-                            </select>
-                          )}
+                          <select
+                            className={`h-10 rounded-md border px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500 ${revertingStatusId === prospect.id ? 'border-red-400 bg-red-50' : 'border-zinc-300 bg-white'}`}
+                            value={prospect.status}
+                            onChange={(e) => {
+                              setRevertingStatusId(null);
+                              void handleStatusChange(prospect.id, e.target.value as PipelineStatus);
+                            }}
+                          >
+                            {PIPELINE_STATUSES.map((s) => (
+                              <option key={s} value={s}>
+                                {STATUS_LABELS[s]}
+                              </option>
+                            ))}
+                          </select>
                         </div>
                       </article>
                     </li>
