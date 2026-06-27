@@ -41,7 +41,13 @@ const run = (
   openTasks: Task[] = [],
   units: Unit[] = [],
   tourScheduledAt?: Date
-) => applyStatusRules(status, { prospect: p, openTasks, units, now, tourScheduledAt });
+) => applyStatusRules(status, {
+  prospect: p,
+  openTasks,
+  units,
+  now,
+  ...(tourScheduledAt !== undefined && { tourScheduledAt }),
+});
 
 // ─── contacted ───────────────────────────────────────────────────────────────
 
