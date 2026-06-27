@@ -295,15 +295,19 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
   response.status(500).json({ error: 'Internal server error' });
 });
 
+export { app };
+
 const port = Number(process.env.PORT ?? 4000);
 
-migrate()
-  .then(() => {
-    app.listen(port, () => {
-      console.log(`Leasing CRM API listening on http://localhost:${port}`);
+if (process.env.NODE_ENV !== 'test') {
+  migrate()
+    .then(() => {
+      app.listen(port, () => {
+        console.log(`Leasing CRM API listening on http://localhost:${port}`);
+      });
+    })
+    .catch((err) => {
+      console.error('Migration failed, aborting startup:', err);
+      process.exit(1);
     });
-  })
-  .catch((err) => {
-    console.error('Migration failed, aborting startup:', err);
-    process.exit(1);
-  });
+}
